@@ -1,10 +1,10 @@
 # HamBot: A Python Library for Robot Control
-
+Asad
 HamBot is a Python library designed to control a robot equipped with various sensors, including IMU, Lidar, and Camera. The library simplifies robot programming, providing easy-to-use interfaces for sensor data acquisition and motor control.
 
 ![Pi Camera](docs/figures/hambot_dims.png)
 ## Technical Specifications
-
+  
 | Component                  | Specification                                                                                                                                                                                                            |
 |-----------------------------|--------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
 | Wheel Diameter / Radius     | 90 mm / 45 mm                                                                                                                                                                                                            |
