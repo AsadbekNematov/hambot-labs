@@ -2,7 +2,7 @@ import math, time, threading, sys, signal
 from buildhat import Motor
 from robot_systems.imu import IMU
 from robot_systems.lidar import Lidar
-from robot_systems.camera import Camera
+# from robot_systems.camera import Camera
 
 class HamBot:
     def __init__(self, lidar_enabled=True, camera_enabled=True):
@@ -30,10 +30,10 @@ class HamBot:
         else :
             self.lidar = None
 
-        if camera_enabled:
-            self.camera = Camera()
-        else:
-            self.camera = None
+        # if camera_enabled:
+        #     self.camera = Camera()
+        # else:
+        #     self.camera = None
 
         # Start the thread to update motor positions
         self.stop_thread = False
