@@ -206,18 +206,29 @@ def main():
     try:
         for item in plan:
             k = item["k"]
+
             if item["kind"] == "leg":
-                # Pre-turn to align with segment
                 if abs(item["pre"]) > 1e-6:
+                    print(f"DEBUG: Preparing pre-turn for segment {k}")
+                    time.sleep(5.0)  # pause before command
                     turn_in_place(bot, item["pre"], label=f"P{k} pre-turn")
-                # Drive straight for the distance
+
+                print(f"DEBUG: Preparing straight drive for segment {k}")
+                time.sleep(1.0)
                 drive_straight(bot, item["dist"], label=f"P{k} straight")
-                # Post-turn to match final desired heading
+
                 if abs(item["post"]) > 1e-6:
+                    print(f"DEBUG: Preparing post-turn for segment {k}")
+                    time.sleep(1.0)
                     turn_in_place(bot, item["post"], label=f"P{k} post-turn")
+
             else:
-                # Pure turn-only move
+                print(f"DEBUG: Preparing turn-only for segment {k}")
+                time.sleep(1.0)
                 turn_in_place(bot, item["dtheta"], label=f"P{k} in-place")
+
+            # Short pause after finishing each segment
+            time.sleep(1.0)
 
         stop(bot)
         print("Done.")
