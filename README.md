@@ -1,5 +1,6 @@
 # HamBot: A Python Library for Robot Control
-Asad
+pip install buildhat adafruit-circuitpython-bno055 adafruit-blinka adafruit-circuitpython-rplidar opencv-python numpy
+sudo apt install -y python3-pil.imagetk python3-tk
 HamBot is a Python library designed to control a robot equipped with various sensors, including IMU, Lidar, and Camera. The library simplifies robot programming, providing easy-to-use interfaces for sensor data acquisition and motor control.
 
 ![Pi Camera](docs/figures/hambot_dims.png)
