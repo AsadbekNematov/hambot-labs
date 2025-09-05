@@ -13,7 +13,7 @@ print("Starting forward drive for 2 seconds...")
 bot.set_left_motor_speed(50)   # left reversed
 bot.set_right_motor_speed(50)   # right forward
 
-time.sleep(6)  # drive forward for 2 seconds
+time.sleep(5)  # drive forward for 2 seconds
 
 print("Stopping motors.")
 bot.stop_motors()
