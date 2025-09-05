@@ -1,5 +1,7 @@
 # AsadbekNematov_Lab1.py
 # Physical HamBot — Lab 1 Waypoint Navigation (Encoders + IMU only; no LiDAR)
+import sys, os
+sys.path.append(os.path.join(os.path.dirname(__file__), "src"))
 
 import math, time, argparse
 from robot_systems.robot import HamBot
