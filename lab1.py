@@ -12,16 +12,21 @@ sys.path.append(os.path.join(os.path.dirname(__file__), "src"))
 from robot_systems.robot import HamBot
 
 # ----------------- Geometry & limits (robot constants) -----------------
-R_WHEEL_M   = 0.045             # wheel radius [m]
-AXLE_LEN_M  = 0.184             # track width [m] (not needed for P0→P1)
-RPM_MAX     = 75.0              # datasheet
-RPM_SAFE    = 25.0              # << go slow first
-ENC_DEGREES = True              # << set True if encoders report degrees
+R_WHEEL_M   = 0.045   # wheel radius [m] (90 mm diameter)
+AXLE_LEN_M  = 0.184   # track width [m]
+PCT_SAFE    = 22.0    # percent power (gentle)
+ENC_DEGREES = False   # your encoders are in radians (from quick_check)
+ENC_SIGN_L  = +1.0    # encoder sign (leave +1.0 unless your quick_check showed opposite)
+ENC_SIGN_R  = +1.0
+FT2M        = 0.3048  # feet to meters
 
-FT2M = 0.3048
+def _clamp_pct(x: float) -> float:
+    """Clamp motor percent command to [-100, 100]."""
+    return max(-100.0, min(100.0, x))
 
-def wrap_pi(a): 
-    return (a + math.pi) % (2.0*math.pi) - math.pi
+def wrap_pi(a: float) -> float:
+    """Wrap angle to (-pi, pi]."""
+    return (a + math.pi) % (2.0 * math.pi) - math.pi
 
 # ----------------- Waypoints (feet, radians) -----------------
 # NOTE: We store (x_ft, y_ft, theta_rad) exactly as given.
@@ -43,78 +48,98 @@ WPTS = [
 ]
 
 # ----------------- Helpers -----------------
-def stop(bot): 
+def stop(bot: HamBot) -> None:
     bot.stop_motors()
 
-def get_heading_deg(bot): 
+def get_heading_deg(bot: HamBot) -> float:
     return bot.get_heading()
 
-def enc_distance_m(l_now, r_now, l0, r0):
-    """Compute linear distance traveled [m] from encoder deltas."""
-    if ENC_DEGREES:
-        dl_rad = math.radians(l_now - l0)
-        dr_rad = math.radians(r_now - r0)
-    else:
-        dl_rad = (l_now - l0)
-        dr_rad = (r_now - r0)
-    # average wheel arc length
-    return R_WHEEL_M * 0.5 * (dl_rad + dr_rad)
+def enc_distance_m(l_now: float, r_now: float, l0: float, r0: float) -> float:
+    """Linear distance [m] from encoder deltas, with sign and unit handling."""
+    dl = ENC_SIGN_L * (l_now - l0)   # wheel angle delta (radians)
+    dr = ENC_SIGN_R * (r_now - r0)   # wheel angle delta (radians)
+    if ENC_DEGREES:                  # (not expected, but supported)
+        dl = math.radians(dl)
+        dr = math.radians(dr)
+    return R_WHEEL_M * 0.5 * (dl + dr)  # average wheel arc length
 
-def drive_straight_feet(bot, dist_ft, rpm=RPM_SAFE, label="straight(ft)"):
-    """Drive straight for given distance in FEET (positive forward)."""
+def drive_straight_feet(bot: HamBot, dist_ft: float, pct: float = PCT_SAFE,
+                        kp_heading: float = 1.6, label: str = "straight(ft)") -> None:
+    """
+    Drive straight for given FEET using:
+      - IMU heading hold (P-only)
+      - gentle end ramp to avoid overshoot
+    """
     dist_m = dist_ft * FT2M
-    print(f"{label}: target {dist_ft:.3f} ft ({dist_m:.3f} m) at {rpm:.1f} RPM")
-    if dist_m < 0:
-        # reverse
-        bot.set_left_motor_speed(-rpm)
-        bot.set_right_motor_speed(-rpm)
-    else:
-        bot.set_left_motor_speed(+rpm)
-        bot.set_right_motor_speed(+rpm)
+    print(f"{label}: target {dist_ft:.3f} ft ({dist_m:.3f} m) at {pct:.1f}%")
 
-    l0, r0 = bot.get_encoder_readings()  # assumes per-wheel angles
+    yaw0 = bot.get_heading() or 0.0
+    l0, r0 = bot.get_encoder_readings()
+
+    base = +pct if dist_m >= 0 else -pct
     traveled = 0.0
+
     while True:
+        # heading error (radians), wrap to [-pi, pi]
+        yaw = bot.get_heading()
+        if yaw is None:
+            yaw = yaw0
+        e = math.radians(((yaw0 - yaw + 180) % 360) - 180)
+
+        # tiny differential to keep it straight (~0.1% per deg, clamp ±8%)
+        turn_pct = max(-8.0, min(8.0, math.degrees(e) * 0.10))
+
+        # distance traveled and a short linear ramp in last 0.25 m
         l, r = bot.get_encoder_readings()
         s = enc_distance_m(l, r, l0, r0)
         traveled = s if dist_m >= 0 else -s
+        remain = max(0.0, abs(dist_m) - traveled)
+        scale = 1.0 if remain > 0.25 else max(0.28, remain / 0.25)
+
+        left_cmd  = _clamp_pct((base - turn_pct) * scale)
+        right_cmd = _clamp_pct((base + turn_pct) * scale)
+        bot.set_left_motor_speed(left_cmd)
+        bot.set_right_motor_speed(right_cmd)
+
         if traveled >= abs(dist_m) - 1e-3:
             break
         time.sleep(0.01)
 
-    stop(bot)
+    bot.stop_motors()
     print(f"{label}: done (meas ≈ {traveled:.3f} m)")
 
-# (Keeping a simple IMU-based in-place turn for later segments)
-def turn_in_place(bot, dtheta_rad, rpm=RPM_SAFE, label="turn"):
-    """In-place rotation using IMU feedback (+ = CCW, − = CW)."""
-    if abs(dtheta_rad) < 1e-6: 
+def turn_in_place(bot: HamBot, dtheta_rad: float, pct: float = 18.0, label: str = "turn") -> None:
+    """
+    In-place rotation using IMU feedback (+ = CCW, − = CW), percent power.
+    Kept here for next segment; not used in P0→P1 straight.
+    """
+    if abs(dtheta_rad) < 1e-6:
         print(f"{label}: skip (|Δθ| small)")
         return
 
-    # set opposite wheel directions for spin turn
+    pct = abs(pct)
     if dtheta_rad > 0:    # CCW
-        bot.set_left_motor_speed(-rpm)
-        bot.set_right_motor_speed(+rpm)
+        bot.set_left_motor_speed(_clamp_pct(-pct))
+        bot.set_right_motor_speed(_clamp_pct(+pct))
     else:                 # CW
-        bot.set_left_motor_speed(+rpm)
-        bot.set_right_motor_speed(-rpm)
+        bot.set_left_motor_speed(_clamp_pct(+pct))
+        bot.set_right_motor_speed(_clamp_pct(-pct))
 
-    # integrate IMU heading until Δθ reached
     h0 = get_heading_deg(bot) or 0.0
     last = math.radians(h0)
     acc = 0.0
     while True:
         h = get_heading_deg(bot)
-        if h is None: 
-            time.sleep(0.01); 
+        if h is None:
+            time.sleep(0.01)
             continue
         rad = math.radians(h)
         acc += wrap_pi(rad - last)
         last = rad
-        if abs(acc) >= abs(dtheta_rad): 
+        if abs(acc) >= abs(dtheta_rad):
             break
         time.sleep(0.005)
+
     stop(bot)
     print(f"{label}: target {dtheta_rad:+.3f} rad, meas ≈ {acc:+.3f} rad")
 
@@ -122,22 +147,11 @@ def turn_in_place(bot, dtheta_rad, rpm=RPM_SAFE, label="turn"):
 def main():
     bot = HamBot(lidar_enabled=False, camera_enabled=False)
     try:
-        # -------- Segment P0 → P1 (ignore θ for now) --------
-        print("\n=== P0 → P1 (feet, slow) ===")
-        x1_ft, y1_ft, th1 = WPTS[0]
-        x2_ft, y2_ft, th2 = WPTS[1]
-
-        d_ft = math.hypot(x2_ft - x1_ft, y2_ft - y1_ft)  # in feet
-        # your example: from -1 to 0.5 → 1.5 ft — same idea here on 2D
-        drive_straight_feet(bot, d_ft, rpm=RPM_SAFE, label="P0→P1")
-
-        print("\nP0→P1 complete at safe speed.")
-        # For later: pre-turn to segment heading, post-turn to th2 if needed.
-        # seg_heading = math.atan2((y2_ft - y1_ft), (x2_ft - x1_ft))
-        # turn_in_place(bot, wrap_pi(seg_heading - current_yaw_rad))
-        # drive_straight_feet(bot, d_ft)
-        # turn_in_place(bot, wrap_pi(th2 - seg_heading))
-
+        print("\n=== P0 → P1 (feet, slow, IMU hold) ===")
+        x1_ft, y1_ft, _ = WPTS[0]
+        x2_ft, y2_ft, _ = WPTS[1]
+        d_ft = math.hypot(x2_ft - x1_ft, y2_ft - y1_ft)  # == 3.5 ft
+        drive_straight_feet(bot, d_ft, pct=PCT_SAFE, kp_heading=1.6, label="P0→P1")
     finally:
         stop(bot)
         try:

@@ -1,4 +1,4 @@
-# ---- save as quick_check.py and run: python quick_check.py ----
+# ---- save as quick_check.py and run: python quick_check.py --run ----
 import sys, os, time, math
 sys.path.append(os.path.join(os.path.dirname(__file__), "src"))
 from robot_systems.robot import HamBot
