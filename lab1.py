@@ -53,7 +53,7 @@ def stop(bot: HamBot) -> None:
 
 def get_heading_deg(bot: HamBot) -> float:
     return bot.get_heading()
-
+ 
 def enc_distance_m(l_now: float, r_now: float, l0: float, r0: float) -> float:
     """Linear distance [m] from encoder deltas, with sign and unit handling."""
     dl = ENC_SIGN_L * (l_now - l0)   # wheel angle delta (radians)
