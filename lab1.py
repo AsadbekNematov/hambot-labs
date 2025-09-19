@@ -1,9 +1,9 @@
 # ------------------------------------------------------------
-# Lab 1 – P0→P1 straight, then P1→P2 90° right arc (from waypoints)
+# Lab 1 – P0→P1 straight, P1→P2 90° right arc, P2→P3 straight
 # Robot: Physical HamBot (Encoders + IMU), percent power control
 #
 # Run:
-#   python lab1_p0_p2_arc.py
+#   python lab1_p0_p3.py
 # ------------------------------------------------------------
 
 import sys, os, time, math
@@ -26,12 +26,12 @@ def _clamp_pct(x): return max(-100.0, min(100.0, x))
 def wrap_pi(a):     return (a + math.pi) % (2.0*math.pi) - math.pi
 
 # ----------------- Waypoints (feet, radians) -----------------
-# (x_ft, y_ft, theta_rad) – use exactly what the professor gave.
+# (x_ft, y_ft, theta_rad) – exactly as given by professor
 WPTS = [
     (  2.0,  -2.0,  math.pi    ),   # P0
     ( -1.5,  -2.0,  math.pi    ),   # P1
     ( -2.0,  -1.5,  math.pi/2  ),   # P2
-    ( -2.0,  -0.5,  math.pi/2  ),   # P3 ...
+    ( -2.0,  -0.5,  math.pi/2  ),   # P3
 ]
 
 # ----------------- Encoder helpers -----------------
@@ -86,8 +86,8 @@ def drive_straight_feet(bot, dist_ft, pct=PCT_STRAIGHT, kp_heading=1.6, label="s
 # ----------------- Arc driver (time-synced wheel distances) -----------------
 def drive_arc_by_wheel_dists(bot, sL_m, sR_m, base_pct=PCT_ARC, label="arc"):
     """
-    Drive an arc by commanding both wheels forward/backward in proportion
-    to their target distances so they finish together. Uses encoders only.
+    Drive an arc by commanding both wheels forward in proportion
+    to their target distances so they finish together. Encoders only.
     sL_m, sR_m are signed path lengths for left/right wheels [m].
     """
     # directions & proportional speeds
@@ -136,7 +136,7 @@ def p0_to_p1(bot):
     """Straight from P0 to P1 using heading hold."""
     x1_ft, y1_ft, _ = WPTS[0]
     x2_ft, y2_ft, _ = WPTS[1]
-    d_ft = math.hypot(x2_ft - x1_ft, y2_ft - y1_ft)  # == 3.5 ft
+    d_ft = math.hypot(x2_ft - x1_ft, y2_ft - y1_ft)  # 3.5 ft
     drive_straight_feet(bot, d_ft, pct=PCT_STRAIGHT, kp_heading=1.6, label="P0→P1")
 
 def p1_to_p2_arc(bot):
@@ -144,14 +144,14 @@ def p1_to_p2_arc(bot):
     x1, y1, th1 = WPTS[1]
     x2, y2, th2 = WPTS[2]
 
-    # chord + quarter-circle radius from waypoints (in feet)
+    # geometry from waypoints
     dx_ft, dy_ft = (x2 - x1), (y2 - y1)
-    c_ft  = math.hypot(dx_ft, dy_ft)          # should be sqrt(0.5) ft
-    R_ft  = c_ft / math.sqrt(2.0)             # center radius for 90°
+    c_ft  = math.hypot(dx_ft, dy_ft)         # sqrt(0.5) ft
+    R_ft  = c_ft / math.sqrt(2.0)            # center radius for 90°
     R_m   = R_ft * FT2M
-    Theta = math.pi / 2.0                     # 90° right
+    Theta = math.pi / 2.0                    # 90° right
 
-    # wheel path lengths (right wheel is inner/shorter)
+    # wheel path lengths (right wheel inner/shorter)
     inner = R_m - AXLE_LEN_M/2.0
     outer = R_m + AXLE_LEN_M/2.0
     sR = Theta * inner
@@ -160,6 +160,13 @@ def p1_to_p2_arc(bot):
     print(f"\nP1→P2 geometry: chord={c_ft:.6f} ft, R={R_ft:.3f} ft ({R_m:.4f} m)")
     print(f"Wheel dists: L={sL:.5f} m, R={sR:.5f} m  (right shorter)")
     drive_arc_by_wheel_dists(bot, sL, sR, base_pct=PCT_ARC, label="P1→P2 arc")
+
+def p2_to_p3(bot):
+    """Straight up +1.0 ft from P2 to P3 (same x, y increases by 1 ft)."""
+    x1_ft, y1_ft, _ = WPTS[2]
+    x2_ft, y2_ft, _ = WPTS[3]
+    d_ft = math.hypot(x2_ft - x1_ft, y2_ft - y1_ft)  # should be 1.0 ft
+    drive_straight_feet(bot, d_ft, pct=PCT_STRAIGHT, kp_heading=1.6, label="P2→P3")
 
 # ----------------- Main -----------------
 def main():
@@ -170,6 +177,9 @@ def main():
 
         print("\n=== P1 → P2 (quarter right arc) ===")
         p1_to_p2_arc(bot)
+
+        print("\n=== P2 → P3 (straight 1.0 ft up) ===")
+        p2_to_p3(bot)
 
         print("\nDone.")
     finally:
