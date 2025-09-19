@@ -59,41 +59,50 @@ def enc_wheel_progress_m(bot, l0, r0):
     return R_WHEEL_M * dl, R_WHEEL_M * dr
 
 # ----------------- Motion primitives (ENCODER-ONLY) -----------------
-def drive_straight_feet(bot, dist_ft, pct=PCT_STRAIGHT, label="straight(ft)"):
+def drive_straight_feet(bot, dist_ft, pct=PCT_STRAIGHT, label="straight(ft)",
+                        accel_m=0.20, decel_m=0.20, min_scale=0.35, K_bal=120.0):
     """
-    Encoder-only straight: match per-wheel distances with a small encoder-balancer.
-    No IMU. Stops when center distance reaches target.
+    Encoder-only straight with symmetric accel/decel (trapezoid) and encoder balance.
+      accel_m: distance over which to ramp up to full power [m]
+      decel_m: distance over which to ramp down near the end [m]
+      min_scale: the minimum scale factor during ramps (0..1)
+      K_bal: [% per meter] to correct (right-left) encoder drift (clamped ±8%)
+    Set accel_m=0 and decel_m=0 (and min_scale=1) for constant speed.
     """
     dist_m = dist_ft * FT2M
-    print(f"{label}: {dist_ft:.4f} ft ({dist_m:.3f} m) @ {pct:.1f}%")
+    print(f"{label}: {dist_ft:.4f} ft ({dist_m:.3f} m) @ {pct:.1f}%  "
+          f"[accel={accel_m:.2f} m, decel={decel_m:.2f} m]")
 
-    # sign for forward/backward
     base = +pct if dist_m >= 0 else -pct
     l0, r0 = bot.get_encoder_readings()
 
-    # simple encoder balance: if right>left, slow right a bit, speed up left
-    K_bal = 120.0  # [% per meter of (R-L) distance difference], clamp ±8%
     while True:
-        sL, sR = enc_wheel_progress_m(bot, l0, r0)
+        # progress (per-wheel) and center distance
+        sL, sR = enc_wheel_progress_m(bot, l0, r0)         # meters
         s_center = 0.5 * (sL + sR)
-        traveled = s_center if dist_m >= 0 else -s_center
-        remain = max(0.0, abs(dist_m) - traveled)
+        progressed = abs(s_center)
+        remaining  = max(0.0, abs(dist_m) - progressed)
 
-        diff = sR - sL
-        turn_pct = max(-8.0, min(8.0, K_bal * diff))  # + -> push left up, right down
+        # encoder balance (push the slower side a bit)
+        diff = sR - sL                                     # + if right > left
+        turn_pct = max(-8.0, min(8.0, K_bal * diff))
 
-        # end ramp inside last 0.25 m
-        scale = 1.0 if remain > 0.25 else max(0.28, remain / 0.25)
+        # ----- trapezoid scaling -----
+        # ramp-up based on how far we've gone
+        scale_up = 1.0 if accel_m <= 0 else min(1.0, progressed / accel_m)
+        # ramp-down based on how much is left
+        scale_dn = 1.0 if decel_m <= 0 else min(1.0, remaining / decel_m)
+        scale = max(min_scale, min(scale_up, scale_dn))    # smooth & bounded
 
         bot.set_left_motor_speed(  _clamp_pct((base + turn_pct) * scale) )
         bot.set_right_motor_speed( _clamp_pct((base - turn_pct) * scale) )
 
-        if traveled >= abs(dist_m) - 1e-3:
+        if progressed >= abs(dist_m) - 1e-3:
             break
         time.sleep(0.01)
 
     bot.stop_motors()
-    print(f"{label}: done (meas ≈ {traveled:.3f} m)")
+    print(f"{label}: done (meas ≈ {s_center:.3f} m)")
 
 def turn_in_place_by_angle(bot, dtheta_rad, pct=PCT_TURN, label="spin"):
     """
