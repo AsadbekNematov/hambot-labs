@@ -307,40 +307,64 @@ def p3_to_p4_arc(bot):
 
 def p4_to_p5(bot):
     """
-    P4 = (-1.0, -0.5, 270°)  →  P5 = (-0.5, -1.0, 315°)
-    Do EXACTLY:
-      +45° left (pre-turn) → straight 0.7071 ft → +45° left (post-turn to face +x).
+    P4 = (-1.0, -0.5, 270°) → P5 = (-0.5, -1.0, 315° nominal in WPTS)
+    Required motion:
+      1) +45° left (to face along the SE diagonal)
+      2) straight ≈ 0.7071 ft
+      3) +45° left (to face +x)
     """
-    x1, y1, th1 = WPTS[4]   # θ4 = 3π/2 = 270°
-    x2, y2, th2 = WPTS[5]
+    x1, y1, th1 = WPTS[4]   # th1 = 3π/2 = 270°
+    x2, y2, _   = WPTS[5]
 
-    # geometry from waypoints
-    dx_ft, dy_ft = (x2 - x1), (y2 - y1)            # (+0.5, -0.5)
-    d_ft  = math.hypot(dx_ft, dy_ft)               # √0.5 = 0.70710678 ft
-    alpha = math.atan2(dy_ft, dx_ft)               # -π/4 = 315°
+    # corridor geometry
+    dx_ft, dy_ft = (x2 - x1), (y2 - y1)        # (+0.5, -0.5)
+    d_ft  = math.hypot(dx_ft, dy_ft)           # √0.5 ≈ 0.70710678 ft
+    alpha = math.atan2(dy_ft, dx_ft)           # -π/4 = -45°  (SE direction)
+    theta_target = 0.0                         # end facing +x
 
-    # we will finish facing +x (0°) per your requirement
-    theta_target = 0.0
-
-    # --- PRE-TURN: θ4 → α (expect +45° CCW) ---
-    dtheta_pre = wrap_pi(alpha - th1)
-    print(f"\nP4→P5 pre-turn: θ4→α = {math.degrees(dtheta_pre):+.1f}° (expect +45°)")
+    # --- PRE-TURN: 270° → -45°  (should be +45° CCW) ---
+    dtheta_pre = wrap_pi(alpha - th1)          # wrap(+315°) = +45°
+    print(f"\nP4→P5 pre-turn: Δ={math.degrees(dtheta_pre):+.1f}° (expect +45°)")
     turn_in_place_strict(bot, dtheta_pre, pct=PCT_TURN, label="P4→P5 pre-turn")
 
-    # settle, ensure zero command before the straight
+    # settle & hard stop so next leg starts from zero command
     bot.stop_motors(); time.sleep(0.12)
 
-    # --- STRAIGHT: d_ft while holding yaw_ref = α ---
-    print(f"P4→P5 straight: {d_ft:.4f} ft (expect 0.7071 ft)")
-    drive_straight_feet_with_ref(bot, d_ft, yaw_ref_rad=alpha,
-                                 pct=PCT_STRAIGHT, kp_deg_to_pct=0.10, label="P4→P5 straight")
+    # --- STRAIGHT: ~0.7071 ft while holding α ---
+    # Use a gentle short-run ramp and tighter turn clamp (±6%) to avoid wiggle.
+    dist_m = d_ft * FT2M
+    print(f"P4→P5 straight: {d_ft:.4f} ft ({dist_m:.3f} m) along α={math.degrees(alpha):.1f}°")
+    base = +PCT_STRAIGHT
+    l0, r0 = bot.get_encoder_readings()
+    traveled = 0.0
+    while True:
+        # heading correction toward α (deg -> % at ~0.10, clamped ±6%)
+        e_rad = wrap_pi(alpha - read_heading_rad(bot))
+        turn_pct = max(-6.0, min(6.0, math.degrees(e_rad) * 0.10))
 
-    # settle again so post-turn never nudges forward
+        s = enc_distance_center_m(bot, l0, r0)      # meters
+        traveled = s / 1.0                           # positive forward
+        remain = max(0.0, dist_m - traveled)
+
+        # short-segment ramp (whole leg is < 0.25 m)
+        scale = max(0.33, remain / max(0.12, dist_m))  # smooth, no stall
+
+        bot.set_left_motor_speed(  _clamp_pct((base - turn_pct) * scale) )
+        bot.set_right_motor_speed( _clamp_pct((base + turn_pct) * scale) )
+
+        if traveled >= dist_m - 1e-3:
+            break
+        time.sleep(0.01)
+
+    bot.stop_motors()
+    print(f"P4→P5 straight: done (meas ≈ {traveled:.3f} m)")
+
+    # settle so post-turn never nudges forward
     bot.stop_motors(); time.sleep(0.12)
 
-    # --- POST-TURN: α → +x (expect +45° CCW) ---
-    dtheta_post = wrap_pi(theta_target - alpha)
-    print(f"P4→P5 post-turn: α→+x = {math.degrees(dtheta_post):+.1f}° (expect +45°)")
+    # --- POST-TURN: -45° → +x (0°)  (should be +45° CCW) ---
+    dtheta_post = wrap_pi(theta_target - alpha)      # +45°
+    print(f"P4→P5 post-turn: Δ={math.degrees(dtheta_post):+.1f}° (expect +45°)")
     turn_in_place_strict(bot, dtheta_post, pct=PCT_TURN, label="P4→P5 post-turn")
 
 # ----------------- Main -----------------
