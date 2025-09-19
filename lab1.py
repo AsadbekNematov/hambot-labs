@@ -233,40 +233,37 @@ def p3_to_p4_arc(bot):
     drive_arc_by_wheel_dists(bot, sL, sR, base_pct=PCT_ARC, label="P3→P4 arc")
 
 def p4_to_p5(bot):
-    """Pre-turn (relative), straight, (usually) no post-turn for P4→P5."""
+    """P4→P5: +45° pre-turn, straight 0.7071 ft, +45° post-turn to face +x."""
     x1, y1, th1 = WPTS[4]   # P4 = (-1.0, -0.5, 270°)
-    x2, y2, th2 = WPTS[5]   # P5 = (-0.5, -1.0, 315°)
+    x2, y2, th2 = WPTS[5]   # P5 = (-0.5, -1.0, 315°)  # not used for final heading here
 
-    # 1) geometry from waypoints
+    # geometry from waypoints
     dx_ft, dy_ft = (x2 - x1), (y2 - y1)
     d_ft  = math.hypot(dx_ft, dy_ft)            # 0.7071 ft
     alpha = math.atan2(dy_ft, dx_ft)            # -pi/4 = 315°
 
-    # 2) PRE-TURN: θ4 -> α  (relative, not using IMU zero)
-    dtheta_pre = wrap_pi(alpha - th1)           # +45°
-    print(f"\nP4→P5 pre-turn (relative): θ4→α = {math.degrees(dtheta_pre):+.1f}°")
+    # we want to end at +x (0 rad). If you want the professor's θ5 instead, set to th2.
+    theta_target = 0.0                          # face +x at the end
+
+    # --- pre-turn: θ4 -> α (should be +45° CCW) ---
+    dtheta_pre = wrap_pi(alpha - th1)
+    print(f"\nP4→P5 pre-turn: θ4→α = {math.degrees(dtheta_pre):+.1f}° (expect +45°)")
     turn_in_place(bot, dtheta_pre, pct=PCT_TURN, label="P4→P5 pre-turn")
 
-    # settle to zero motion before straight
-    
+    # small settle before straight
     bot.stop_motors(); time.sleep(0.10)
 
-    # 3) STRAIGHT: distance d_ft with heading hold
-    print(f"P4→P5 straight distance: {d_ft:.4f} ft")
+    # --- straight along that heading (0.7071 ft) ---
+    print(f"P4→P5 straight: {d_ft:.4f} ft (expect 0.7071 ft)")
     drive_straight_feet(bot, d_ft, pct=PCT_STRAIGHT, kp_heading=1.6, label="P4→P5 straight")
 
-    # settle again before any post-turn
-    
+    # small settle before post-turn
     bot.stop_motors(); time.sleep(0.10)
 
-    # 4) POST-TURN: α -> θ5 (should be ~0°; skip if tiny)
-    dtheta_post = wrap_pi(th2 - alpha)
-    err_deg = abs(math.degrees(dtheta_post))
-    if err_deg <= 2.0:
-        print(f"P4→P5 post-turn skipped (|Δ|={err_deg:.2f}° ≤ 2°)")
-    else:
-        print(f"P4→P5 post-turn (relative): α→θ5 = {math.degrees(dtheta_post):+.1f}°")
-        turn_in_place(bot, dtheta_post, pct=PCT_TURN, label="P4→P5 post-turn")
+    # --- post-turn: α -> +x (should be +45° CCW) ---
+    dtheta_post = wrap_pi(theta_target - alpha)
+    print(f"P4→P5 post-turn: α→+x = {math.degrees(dtheta_post):+.1f}° (expect +45°)")
+    turn_in_place(bot, dtheta_post, pct=PCT_TURN, label="P4→P5 post-turn")
 
 # ----------------- Main -----------------
 def main():
