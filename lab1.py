@@ -15,6 +15,7 @@ R_WHEEL_M    = 0.045    # wheel radius [m]  (90 mm diameter)
 AXLE_LEN_M   = 0.184    # wheel spacing [m]
 PCT_STRAIGHT = 60.0     # straight drive base power (%)
 PCT_ARC      = 55.0     # arc drive base power (%)
+PCT_TURN     = 55.0     # in-place turn power (%)
 FT2M         = 0.3048
 
 # Encoders: your hardware reports radians (from quick_check)
@@ -33,6 +34,7 @@ WPTS = [
     ( -2.0,  -1.5,  math.pi/2  ),   # P2
     ( -2.0,  -0.5,  math.pi/2  ),   # P3
     ( -1.0,  -0.5,  3*math.pi/2),   # P4
+    ( -0.5,  -1.0,  7*math.pi/4),   # P5
 ]
 
 # ----------------- Encoder helpers -----------------
@@ -47,7 +49,9 @@ def enc_wheel_deltas_rad(bot, l0, r0):
 def enc_distance_center_m(bot, l0, r0):
     dl, dr = enc_wheel_deltas_rad(bot, l0, r0)
     return R_WHEEL_M * 0.5 * (dl + dr)
-
+def read_heading_rad(bot):
+    hdeg = bot.get_heading() or 0.0
+    return math.radians(hdeg)
 # ----------------- Straight with heading hold -----------------
 def drive_straight_feet(bot, dist_ft, pct=PCT_STRAIGHT, kp_heading=1.6, label="straight(ft)"):
     dist_m = dist_ft * FT2M
@@ -83,6 +87,41 @@ def drive_straight_feet(bot, dist_ft, pct=PCT_STRAIGHT, kp_heading=1.6, label="s
 
     bot.stop_motors()
     print(f"{label}: done (meas ≈ {traveled:.3f} m)")
+
+def turn_in_place(bot, dtheta_rad, pct=PCT_TURN, label="turn"):
+    dtheta = wrap_pi(dtheta_rad)
+    if abs(dtheta) < math.radians(1.5):
+        print(f"{label}: skip (|Δθ| < 1.5°)")
+        return
+    pct = abs(pct)
+    if dtheta > 0:  # CCW
+        bot.set_left_motor_speed(_clamp_pct(-pct))
+        bot.set_right_motor_speed(_clamp_pct(+pct))
+    else:           # CW
+        bot.set_left_motor_speed(_clamp_pct(+pct))
+        bot.set_right_motor_speed(_clamp_pct(-pct))
+
+    last = read_heading_rad(bot)
+    acc = 0.0
+    while True:
+        rad = read_heading_rad(bot)
+        acc += wrap_pi(rad - last)
+        last = rad
+        # gentle taper near the end
+        remain = abs(dtheta) - abs(acc)
+        if remain < math.radians(12):
+            scale = max(0.35, remain / math.radians(12))
+            if dtheta > 0:
+                bot.set_left_motor_speed(_clamp_pct(-pct * scale))
+                bot.set_right_motor_speed(_clamp_pct(+pct * scale))
+            else:
+                bot.set_left_motor_speed(_clamp_pct(+pct * scale))
+                bot.set_right_motor_speed(_clamp_pct(-pct * scale))
+        if abs(acc) >= abs(dtheta):
+            break
+        time.sleep(0.005)
+    bot.stop_motors()
+    print(f"{label}: target {math.degrees(dtheta):+.1f}°, meas ≈ {math.degrees(acc):+.1f}°")
 
 # ----------------- Arc driver (time-synced wheel distances) -----------------
 def drive_arc_by_wheel_dists(bot, sL_m, sR_m, base_pct=PCT_ARC, label="arc"):
@@ -193,6 +232,30 @@ def p3_to_p4_arc(bot):
     print(f"Wheel dists: L={sL:.5f} m, R={sR:.5f} m  (right shorter)")
     drive_arc_by_wheel_dists(bot, sL, sR, base_pct=PCT_ARC, label="P3→P4 arc")
 
+def p4_to_p5(bot):
+    """Pre-turn to segment heading, straight distance, post-turn to θ5."""
+    x1, y1, th1 = WPTS[4]                         # P4
+    x2, y2, th2 = WPTS[5]                         # P5
+    dx_ft, dy_ft = (x2 - x1), (y2 - y1)
+    d_ft  = math.hypot(dx_ft, dy_ft)              # 0.7071 ft
+    alpha = math.atan2(dy_ft, dx_ft)              # -pi/4 == 315°
+
+    # --- pre-turn to face segment heading ---
+    h_now = read_heading_rad(bot)
+    pre = wrap_pi(alpha - h_now)                  # minimal rotation (+45° here)
+    print(f"\nP4→P5 pre-turn: to α={math.degrees(alpha):.1f}° (Δ={math.degrees(pre):+.1f}°)")
+    turn_in_place(bot, pre, pct=PCT_TURN, label="P4→P5 pre-turn")
+
+    # --- drive straight along that heading ---
+    print(f"P4→P5 straight: {d_ft:.4f} ft")
+    drive_straight_feet(bot, d_ft, pct=PCT_STRAIGHT, kp_heading=1.6, label="P4→P5 straight")
+
+    # --- post-turn to final θ5 (should be same as α = 315°) ---
+    h_now = read_heading_rad(bot)
+    post = wrap_pi(th2 - h_now)
+    print(f"P4→P5 post-turn to θ5={math.degrees(th2):.1f}° (Δ={math.degrees(post):+.1f}°)")
+    turn_in_place(bot, post, pct=PCT_TURN, label="P4→P5 post-turn")
+
 # ----------------- Main -----------------
 def main():
     bot = HamBot(lidar_enabled=False, camera_enabled=False)
@@ -208,6 +271,9 @@ def main():
 
         print("\n=== P3 → P4 (half-circle right arc) ===")
         p3_to_p4_arc(bot)
+
+        print("\n=== P4 → P5 (turn, straight, turn) ===")
+        p4_to_p5(bot)
 
         print("\nDone.")
     finally:
