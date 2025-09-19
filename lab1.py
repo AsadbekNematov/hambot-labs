@@ -123,6 +123,79 @@ def turn_in_place(bot, dtheta_rad, pct=PCT_TURN, label="turn"):
     bot.stop_motors()
     print(f"{label}: target {math.degrees(dtheta):+.1f}°, meas ≈ {math.degrees(acc):+.1f}°")
 
+
+def turn_in_place_strict(bot, dtheta_rad, pct=PCT_TURN, label="turn(strict)"):
+    """
+    Pure spin in place: equal and opposite wheel power so there's no forward creep.
+    Uses IMU to integrate angle; independent of IMU zero (dtheta_rad is relative).
+    """
+    dtheta = wrap_pi(dtheta_rad)
+    if abs(dtheta) < math.radians(1.0):
+        print(f"{label}: skip (|Δθ| < 1°)")
+        return
+    pct = abs(pct)
+    # +dir means CCW (left turn)
+    dir = 1.0 if dtheta > 0 else -1.0
+
+    # equal & opposite commands => zero linear component
+    bot.set_left_motor_speed(_clamp_pct(-dir * pct))
+    bot.set_right_motor_speed(_clamp_pct(+dir * pct))
+
+    last = read_heading_rad(bot)
+    acc = 0.0
+    while True:
+        rad = read_heading_rad(bot)
+        acc += wrap_pi(rad - last)
+        last = rad
+
+        # mild taper in the final ~8°
+        remain = abs(dtheta) - abs(acc)
+        if remain < math.radians(8):
+            scale = max(0.35, remain / math.radians(8))
+            bot.set_left_motor_speed(_clamp_pct(-dir * pct * scale))
+            bot.set_right_motor_speed(_clamp_pct(+dir * pct * scale))
+
+        if abs(acc) >= abs(dtheta):
+            break
+        time.sleep(0.005)
+
+    bot.stop_motors()
+    print(f"{label}: target {math.degrees(dtheta):+.1f}°, meas ≈ {math.degrees(acc):+.1f}°")
+def drive_straight_feet_with_ref(bot, dist_ft, yaw_ref_rad,
+                                 pct=PCT_STRAIGHT, kp_deg_to_pct=0.10, label="straight(ref)"):
+    """
+    Straight drive for dist_ft while holding the given yaw_ref_rad (not IMU absolute).
+    kp_deg_to_pct ~ 0.10 => 0.1% power per degree of heading error.
+    """
+    dist_m = dist_ft * FT2M
+    print(f"{label}: {dist_ft:.4f} ft ({dist_m:.3f} m) @ {pct:.1f}% holding ref={math.degrees(yaw_ref_rad):.1f}°")
+
+    base = +pct if dist_m >= 0 else -pct
+    l0, r0 = bot.get_encoder_readings()
+    traveled = 0.0
+
+    while True:
+        # heading error to ref (in degrees)
+        e_rad = wrap_pi(yaw_ref_rad - read_heading_rad(bot))
+        turn_pct = max(-8.0, min(8.0, math.degrees(e_rad) * kp_deg_to_pct))
+
+        s = enc_distance_center_m(bot, l0, r0)
+        traveled = s if dist_m >= 0 else -s
+
+        # gentle end ramp in last 0.25 m
+        remain = max(0.0, abs(dist_m) - traveled)
+        scale = 1.0 if remain > 0.25 else max(0.28, remain / 0.25)
+
+        bot.set_left_motor_speed( _clamp_pct((base - turn_pct) * scale) )
+        bot.set_right_motor_speed(_clamp_pct((base + turn_pct) * scale) )
+
+        if traveled >= abs(dist_m) - 1e-3:
+            break
+        time.sleep(0.01)
+
+    bot.stop_motors()
+    print(f"{label}: done (meas ≈ {traveled:.3f} m)")
+
 # ----------------- Arc driver (time-synced wheel distances) -----------------
 def drive_arc_by_wheel_dists(bot, sL_m, sR_m, base_pct=PCT_ARC, label="arc"):
     """
@@ -233,37 +306,42 @@ def p3_to_p4_arc(bot):
     drive_arc_by_wheel_dists(bot, sL, sR, base_pct=PCT_ARC, label="P3→P4 arc")
 
 def p4_to_p5(bot):
-    """P4→P5: +45° pre-turn, straight 0.7071 ft, +45° post-turn to face +x."""
-    x1, y1, th1 = WPTS[4]   # P4 = (-1.0, -0.5, 270°)
-    x2, y2, th2 = WPTS[5]   # P5 = (-0.5, -1.0, 315°)  # not used for final heading here
+    """
+    P4 = (-1.0, -0.5, 270°)  →  P5 = (-0.5, -1.0, 315°)
+    Do EXACTLY:
+      +45° left (pre-turn) → straight 0.7071 ft → +45° left (post-turn to face +x).
+    """
+    x1, y1, th1 = WPTS[4]   # θ4 = 3π/2 = 270°
+    x2, y2, th2 = WPTS[5]
 
     # geometry from waypoints
-    dx_ft, dy_ft = (x2 - x1), (y2 - y1)
-    d_ft  = math.hypot(dx_ft, dy_ft)            # 0.7071 ft
-    alpha = math.atan2(dy_ft, dx_ft)            # -pi/4 = 315°
+    dx_ft, dy_ft = (x2 - x1), (y2 - y1)            # (+0.5, -0.5)
+    d_ft  = math.hypot(dx_ft, dy_ft)               # √0.5 = 0.70710678 ft
+    alpha = math.atan2(dy_ft, dx_ft)               # -π/4 = 315°
 
-    # we want to end at +x (0 rad). If you want the professor's θ5 instead, set to th2.
-    theta_target = 0.0                          # face +x at the end
+    # we will finish facing +x (0°) per your requirement
+    theta_target = 0.0
 
-    # --- pre-turn: θ4 -> α (should be +45° CCW) ---
+    # --- PRE-TURN: θ4 → α (expect +45° CCW) ---
     dtheta_pre = wrap_pi(alpha - th1)
     print(f"\nP4→P5 pre-turn: θ4→α = {math.degrees(dtheta_pre):+.1f}° (expect +45°)")
-    turn_in_place(bot, dtheta_pre, pct=PCT_TURN, label="P4→P5 pre-turn")
+    turn_in_place_strict(bot, dtheta_pre, pct=PCT_TURN, label="P4→P5 pre-turn")
 
-    # small settle before straight
-    bot.stop_motors(); time.sleep(0.10)
+    # settle, ensure zero command before the straight
+    bot.stop_motors(); time.sleep(0.12)
 
-    # --- straight along that heading (0.7071 ft) ---
+    # --- STRAIGHT: d_ft while holding yaw_ref = α ---
     print(f"P4→P5 straight: {d_ft:.4f} ft (expect 0.7071 ft)")
-    drive_straight_feet(bot, d_ft, pct=PCT_STRAIGHT, kp_heading=1.6, label="P4→P5 straight")
+    drive_straight_feet_with_ref(bot, d_ft, yaw_ref_rad=alpha,
+                                 pct=PCT_STRAIGHT, kp_deg_to_pct=0.10, label="P4→P5 straight")
 
-    # small settle before post-turn
-    bot.stop_motors(); time.sleep(0.10)
+    # settle again so post-turn never nudges forward
+    bot.stop_motors(); time.sleep(0.12)
 
-    # --- post-turn: α -> +x (should be +45° CCW) ---
+    # --- POST-TURN: α → +x (expect +45° CCW) ---
     dtheta_post = wrap_pi(theta_target - alpha)
     print(f"P4→P5 post-turn: α→+x = {math.degrees(dtheta_post):+.1f}° (expect +45°)")
-    turn_in_place(bot, dtheta_post, pct=PCT_TURN, label="P4→P5 post-turn")
+    turn_in_place_strict(bot, dtheta_post, pct=PCT_TURN, label="P4→P5 post-turn")
 
 # ----------------- Main -----------------
 def main():
