@@ -13,8 +13,8 @@ from robot_systems.robot import HamBot
 # ----------------- Robot constants -----------------
 R_WHEEL_M    = 0.045    # wheel radius [m]  (90 mm diameter)
 AXLE_LEN_M   = 0.184    # wheel spacing [m]
-PCT_STRAIGHT = 22.0     # straight drive base power (%)
-PCT_ARC      = 20.0     # arc drive base power (%)
+PCT_STRAIGHT = 50.0     # straight drive base power (%)
+PCT_ARC      = 40.0     # arc drive base power (%)
 FT2M         = 0.3048
 
 # Encoders: your hardware reports radians (from quick_check)
