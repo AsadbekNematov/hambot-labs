@@ -233,28 +233,28 @@ def p3_to_p4_arc(bot):
     drive_arc_by_wheel_dists(bot, sL, sR, base_pct=PCT_ARC, label="P3→P4 arc")
 
 def p4_to_p5(bot):
-    """Pre-turn to segment heading, straight distance, post-turn to θ5."""
-    x1, y1, th1 = WPTS[4]                         # P4
-    x2, y2, th2 = WPTS[5]                         # P5
+    """Pre-turn (relative), straight, post-turn (relative) using waypoint headings only."""
+    x1, y1, th1 = WPTS[4]   # P4
+    x2, y2, th2 = WPTS[5]   # P5
+
+    # 1) geometry from waypoints (feet)
     dx_ft, dy_ft = (x2 - x1), (y2 - y1)
-    d_ft  = math.hypot(dx_ft, dy_ft)              # 0.7071 ft
-    alpha = math.atan2(dy_ft, dx_ft)              # -pi/4 == 315°
+    d_ft  = math.hypot(dx_ft, dy_ft)           # 0.7071 ft
+    alpha = math.atan2(dy_ft, dx_ft)           # -pi/4 (== 315°)
 
-    # --- pre-turn to face segment heading ---
-    h_now = read_heading_rad(bot)
-    pre = wrap_pi(alpha - h_now)                  # minimal rotation (+45° here)
-    print(f"\nP4→P5 pre-turn: to α={math.degrees(alpha):.1f}° (Δ={math.degrees(pre):+.1f}°)")
-    turn_in_place(bot, pre, pct=PCT_TURN, label="P4→P5 pre-turn")
+    # 2) RELATIVE pre-turn from θ4 → α  (independent of IMU zero)
+    dtheta_pre = wrap_pi(alpha - th1)          # +45° (small CCW/left)
+    print(f"\nP4→P5 pre-turn (relative): θ4→α = {math.degrees(dtheta_pre):+.1f}°")
+    turn_in_place(bot, dtheta_pre, pct=PCT_TURN, label="P4→P5 pre-turn")
 
-    # --- drive straight along that heading ---
-    print(f"P4→P5 straight: {d_ft:.4f} ft")
+    # 3) straight along that heading for d_ft
+    print(f"P4→P5 straight distance: {d_ft:.4f} ft")
     drive_straight_feet(bot, d_ft, pct=PCT_STRAIGHT, kp_heading=1.6, label="P4→P5 straight")
 
-    # --- post-turn to final θ5 (should be same as α = 315°) ---
-    h_now = read_heading_rad(bot)
-    post = wrap_pi(th2 - h_now)
-    print(f"P4→P5 post-turn to θ5={math.degrees(th2):.1f}° (Δ={math.degrees(post):+.1f}°)")
-    turn_in_place(bot, post, pct=PCT_TURN, label="P4→P5 post-turn")
+    # 4) RELATIVE post-turn from α → θ5  (should be 0° here)
+    dtheta_post = wrap_pi(th2 - alpha)         # 0°
+    print(f"P4→P5 post-turn (relative): α→θ5 = {math.degrees(dtheta_post):+.1f}°")
+    turn_in_place(bot, dtheta_post, pct=PCT_TURN, label="P4→P5 post-turn")
 
 # ----------------- Main -----------------
 def main():
