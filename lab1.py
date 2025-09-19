@@ -1,9 +1,9 @@
 # ------------------------------------------------------------
-# Lab 1 – P0→P1 straight, P1→P2 90° right arc, P2→P3 straight
+# Lab 1 – P0→P1 straight, P1→P2 90° right arc, P2→P3 straight, P3→P4 180° right arc
 # Robot: Physical HamBot (Encoders + IMU), percent power control
 #
 # Run:
-#   python lab1_p0_p3.py
+#   python lab1_p0_p4.py
 # ------------------------------------------------------------
 
 import sys, os, time, math
@@ -13,8 +13,8 @@ from robot_systems.robot import HamBot
 # ----------------- Robot constants -----------------
 R_WHEEL_M    = 0.045    # wheel radius [m]  (90 mm diameter)
 AXLE_LEN_M   = 0.184    # wheel spacing [m]
-PCT_STRAIGHT = 50.0     # straight drive base power (%)
-PCT_ARC      = 40.0     # arc drive base power (%)
+PCT_STRAIGHT = 60.0     # straight drive base power (%)
+PCT_ARC      = 55.0     # arc drive base power (%)
 FT2M         = 0.3048
 
 # Encoders: your hardware reports radians (from quick_check)
@@ -32,6 +32,7 @@ WPTS = [
     ( -1.5,  -2.0,  math.pi    ),   # P1
     ( -2.0,  -1.5,  math.pi/2  ),   # P2
     ( -2.0,  -0.5,  math.pi/2  ),   # P3
+    ( -1.0,  -0.5,  3*math.pi/2),   # P4
 ]
 
 # ----------------- Encoder helpers -----------------
@@ -144,7 +145,7 @@ def p1_to_p2_arc(bot):
     x1, y1, th1 = WPTS[1]
     x2, y2, th2 = WPTS[2]
 
-    # geometry from waypoints
+    # geometry from waypoints (quarter circle)
     dx_ft, dy_ft = (x2 - x1), (y2 - y1)
     c_ft  = math.hypot(dx_ft, dy_ft)         # sqrt(0.5) ft
     R_ft  = c_ft / math.sqrt(2.0)            # center radius for 90°
@@ -168,6 +169,30 @@ def p2_to_p3(bot):
     d_ft = math.hypot(x2_ft - x1_ft, y2_ft - y1_ft)  # should be 1.0 ft
     drive_straight_feet(bot, d_ft, pct=PCT_STRAIGHT, kp_heading=1.6, label="P2→P3")
 
+def p3_to_p4_arc(bot):
+    """Perfect 180° RIGHT (clockwise) arc from P3 to P4 computed from waypoints. No trim."""
+    x1, y1, th1 = WPTS[3]
+    x2, y2, th2 = WPTS[4]
+
+    # geometry from waypoints (half circle)
+    dx_ft, dy_ft = (x2 - x1), (y2 - y1)     # should be +1.0 ft, 0.0 ft
+    c_ft  = math.hypot(dx_ft, dy_ft)        # chord = 1.0 ft
+    # For a semicircle, chord = 2R  => R = chord/2
+    R_ft  = c_ft / 2.0                      # => 0.5 ft
+    R_m   = R_ft * FT2M                     # 0.1524 m
+    Theta = math.pi                         # 180° right
+
+    # wheel path lengths: right = inner, left = outer (clockwise)
+    inner = R_m - AXLE_LEN_M/2.0            # 0.1524 - 0.0920 = 0.0604 m
+    outer = R_m + AXLE_LEN_M/2.0            # 0.1524 + 0.0920 = 0.2444 m
+    sR = Theta * inner                      # ≈ 0.1898 m
+    sL = Theta * outer                      # ≈ 0.7679 m
+
+    print(f"\nP3→P4 geometry: chord={c_ft:.6f} ft, R={R_ft:.3f} ft ({R_m:.4f} m), Θ=180°")
+    print(f"Radii: inner={inner:.4f} m, outer={outer:.4f} m")
+    print(f"Wheel dists: L={sL:.5f} m, R={sR:.5f} m  (right shorter)")
+    drive_arc_by_wheel_dists(bot, sL, sR, base_pct=PCT_ARC, label="P3→P4 arc")
+
 # ----------------- Main -----------------
 def main():
     bot = HamBot(lidar_enabled=False, camera_enabled=False)
@@ -180,6 +205,9 @@ def main():
 
         print("\n=== P2 → P3 (straight 1.0 ft up) ===")
         p2_to_p3(bot)
+
+        print("\n=== P3 → P4 (half-circle right arc) ===")
+        p3_to_p4_arc(bot)
 
         print("\nDone.")
     finally:
