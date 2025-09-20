@@ -189,6 +189,39 @@ def p0_to_p1(bot):
     d_ft = math.hypot(x2_ft - x1_ft, y2_ft - y1_ft)  # 3.5 ft
     drive_straight_feet(bot, d_ft, pct=PCT_STRAIGHT, label="P0→P1")
 
+
+def imu_trim_to_heading(bot, target_rad, max_trim_deg=10.0, pct_trim=PCT_TURN*0.6):
+    """
+    Use IMU to trim robot heading to `target_rad` (radians, from East convention).
+    - max_trim_deg: if required correction is larger than this, don't trim (likely big error)
+    - pct_trim: base motor power used for the small corrective spin
+    Returns True if a trim was attempted, False otherwise.
+    """
+    try:
+        # request a fresh heading (blocking) with short timeout
+        cur_deg = bot.get_heading(fresh_within=0.5, blocking=True, wait_timeout=0.4)
+        if cur_deg is None:
+            print("IMU trim: no heading available (skip)")
+            return False
+
+        target_deg = (math.degrees(target_rad) + 360.0) % 360.0
+        # compute shortest signed delta in degrees
+        ddeg = ((target_deg - cur_deg + 180.0) % 360.0) - 180.0
+        if abs(ddeg) < 0.8:
+            print(f"IMU trim: already within {abs(ddeg):.2f}° (skip)")
+            return False
+        if abs(ddeg) > abs(max_trim_deg):
+            print(f"IMU trim: required Δ={ddeg:.1f}° exceeds max_trim_deg={max_trim_deg}° (skip)")
+            return False
+
+        print(f"IMU trim: correcting Δ={ddeg:.2f}° -> {('CCW' if ddeg>0 else 'CW')}")
+        turn_in_place_by_angle(bot, dtheta_rad=math.radians(ddeg), pct=pct_trim, label="IMU trim")
+        bot.stop_motors(); time.sleep(0.08)
+        return True
+    except Exception as e:
+        print(f"IMU trim: exception {e}; skip")
+        return False
+
 def p1_to_p2_arc(bot):
     """Perfect quarter RIGHT arc from P1 to P2 computed from waypoints. No trim."""
     x1, y1, th1 = WPTS[1]
@@ -267,19 +300,8 @@ def p4_to_p5(bot):
 
         # brief settle
         bot.stop_motors(); time.sleep(0.12)
-
-        # Optional IMU-based trim (uncomment and adapt if IMU is available on `bot`):
-        # try:
-        #     # waypoint heading at P5 in degrees-from-east
-        #     target_deg = (math.degrees(WPTS[5][2]) + 360.0) % 360.0
-        #     cur_deg = bot.imu.get_heading_cached()  # or bot.imu.get_heading()
-        #     if cur_deg is not None:
-        #         ddeg = ((target_deg - cur_deg + 180.0) % 360.0) - 180.0
-        #         if abs(ddeg) > 1.0:
-        #             print(f"P4→P5 IMU trim: Δ={ddeg:.1f}°")
-        #             turn_in_place_by_angle(bot, math.radians(ddeg), pct=PCT_TURN*0.6, label="P4→P5 IMU trim")
-        # except Exception:
-        #     pass
+        # IMU-based fine trim to match waypoint heading at P5
+        imu_trim_to_heading(bot, target_rad=WPTS[5][2], max_trim_deg=10.0, pct_trim=PCT_TURN*0.6)
 def p5_to_p6(bot):
     """
     Encoder-only P5→P6:
@@ -294,7 +316,10 @@ def p5_to_p6(bot):
     print(f"\nP5→P6 turn: Δθ={math.degrees(dtheta):+.1f}°")
     turn_in_place_by_angle(bot, dtheta_rad=dtheta, pct=PCT_TURN, label="P5→P6 turn")
 
-    bot.stop_motors(); time.sleep(0.12)
+    # IMU-based verification/trim after the encoder spin
+    bot.stop_motors(); time.sleep(0.08)
+    imu_trim_to_heading(bot, target_rad=th2, max_trim_deg=8.0, pct_trim=PCT_TURN*0.5)
+    time.sleep(0.08)
 
     # --- Step 2: Straight distance ---
     d_ft = math.hypot(x2 - x1, y2 - y1)
