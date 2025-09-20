@@ -299,7 +299,7 @@ def p5_to_p6(bot):
     # dtheta = th2 - th1
     # dtheta = ((dtheta + math.pi) % (2*math.pi)) - math.pi  # normalize to [-π, π]
     # print(f"\nP5→P6 turn: Δθ={math.degrees(dtheta):+.1f}°")
-    turn_in_place_by_angle(bot, math.radians(45.0), pct=PCT_TURN, shrink_pct=0.1, label="pre-turn 45° (-2%)")
+    turn_in_place_by_angle(bot, math.radians(45.0), pct=PCT_TURN, shrink_pct=0.5, label="pre-turn 45° (-2%)")
 
     # turn_in_place_by_angle(bot, dtheta_rad=dtheta, pct=PCT_TURN, label="P5→P6 turn")
 
@@ -326,7 +326,7 @@ def p6_to_p7(bot):
     dtheta = th2 - th1
     dtheta = ((dtheta + math.pi) % (2*math.pi)) - math.pi  # normalize
     print(f"\nP6→P7 turn: Δθ={math.degrees(dtheta):+.1f}°")
-    turn_in_place_by_angle(bot, dtheta_rad=dtheta, pct=PCT_TURN, label="P6→P7 turn")
+    turn_in_place_by_angle(bot, dtheta_rad=dtheta, pct=PCT_TURN, shrink_pct=0.1, label="P6→P7 turn")
 
     bot.stop_motors(); time.sleep(0.12)
 
@@ -350,7 +350,7 @@ def p7_to_p8(bot):
     dtheta = th2 - th1
     dtheta = ((dtheta + math.pi) % (2*math.pi)) - math.pi  # normalize to [-π,π]
     print(f"\nP7→P8 turn: Δθ={math.degrees(dtheta):+.1f}°")
-    turn_in_place_by_angle(bot, dtheta_rad=dtheta, pct=PCT_TURN, label="P7→P8 turn")
+    turn_in_place_by_angle(bot, dtheta_rad=dtheta, pct=PCT_TURN, shrink_pct=0.1, label="P7→P8 turn")
 
     bot.stop_motors(); time.sleep(0.12)
 
@@ -373,7 +373,7 @@ def p8_to_p9(bot):
     dtheta = th2 - th1
     dtheta = ((dtheta + math.pi) % (2*math.pi)) - math.pi
     print(f"\nP8→P9 turn: Δθ={math.degrees(dtheta):+.1f}°")
-    turn_in_place_by_angle(bot, dtheta_rad=dtheta, pct=PCT_TURN, label="P8→P9 turn")
+    turn_in_place_by_angle(bot, dtheta_rad=dtheta, pct=PCT_TURN, shrink_pct=0.1, label="P8→P9 turn")
 
     bot.stop_motors(); time.sleep(0.12)
 
@@ -398,7 +398,7 @@ def p9_to_p10(bot):
     dtheta = th2 - th1
     dtheta = ((dtheta + math.pi) % (2*math.pi)) - math.pi
     print(f"\nP9→P10 turn: Δθ={math.degrees(dtheta):+.1f}°")
-    turn_in_place_by_angle(bot, dtheta_rad=dtheta, pct=PCT_TURN, label="P9→P10 turn")
+    turn_in_place_by_angle(bot, dtheta_rad=dtheta, pct=PCT_TURN, shrink_pct=0.1, label="P9→P10 turn")
 
     bot.stop_motors(); time.sleep(0.12)
 
@@ -425,7 +425,7 @@ def p10_to_p11(bot):
     th_mid = math.pi / 2  # north
     dtheta1 = ((th_mid - th1 + math.pi) % (2*math.pi)) - math.pi
     print(f"\nP10→P11 pre-turn: Δθ₁={math.degrees(dtheta1):+.1f}° to face north")
-    turn_in_place_by_angle(bot, dtheta_rad=dtheta1, pct=PCT_TURN, label="P10→P11 pre-turn")
+    turn_in_place_by_angle(bot, dtheta_rad=dtheta1, pct=PCT_TURN, shrink_pct=0.1, label="P10→P11 pre-turn")
     bot.stop_motors(); time.sleep(0.12)
 
     # ---------- Step 2: Quarter-circle RIGHT arc ----------
