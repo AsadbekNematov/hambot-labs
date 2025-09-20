@@ -7,7 +7,7 @@ R_WHEEL_M    = 0.045    # wheel radius [m]
 AXLE_LEN_M   = 0.184    # wheel spacing [m]
 PCT_STRAIGHT = 30.0     # base power for straight (%)
 PCT_ARC      = 30.0     # base power for arcs (%)
-PCT_TURN     = 30.0     # base power for in-place turns (%)
+PCT_TURN     = 10.0     # base power for in-place turns (%)
 FT2M         = 0.3048
 
 # Encoders: your hardware reports radians (from your quick check)
@@ -487,23 +487,23 @@ def main():
         # print("\n=== P3 → P4 (half-circle right arc) ===")
         # p3_to_p4_arc(bot)
 
-        print("\n=== P4 → P5 (turn, straight, turn) ===")
-        p4_to_p5(bot)
+        # print("\n=== P4 → P5 (turn, straight, turn) ===")
+        # p4_to_p5(bot)
 
         print("\n=== P5 → P6 (turn, straight) ===")
         p5_to_p6(bot)
 
-        # print("\n=== P6 → P7 (turn, straight) ===")
-        # p6_to_p7(bot)
+        print("\n=== P6 → P7 (turn, straight) ===")
+        p6_to_p7(bot)
 
-        # print("\n=== P7 → P8 (turn, straight) ===")
-        # p7_to_p8(bot)
+        print("\n=== P7 → P8 (turn, straight) ===")
+        p7_to_p8(bot)
 
-        # print("\n=== P8 → P9 (turn, straight) ===")
-        # p8_to_p9(bot)
+        print("\n=== P8 → P9 (turn, straight) ===")
+        p8_to_p9(bot)
 
-        # print("\n=== P9 → P10 (turn, straight) ===")
-        # p9_to_p10(bot)
+        print("\n=== P9 → P10 (turn, straight) ===")
+        p9_to_p10(bot)
 
         # print("\n=== P10 → P11 (pre-turn, quarter arc) ===")
         # p10_to_p11(bot)
