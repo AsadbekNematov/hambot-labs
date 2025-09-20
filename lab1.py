@@ -1,15 +1,3 @@
-# ------------------------------------------------------------
-# Lab 1 (NO IMU): Waypoint legs with encoders only
-# - P0→P1 straight
-# - P1→P2 quarter-right arc
-# - P2→P3 straight
-# - P3→P4 half-right arc
-# - P4→P5 (+45° turn) -> straight 0.7071 ft -> (+45° turn)
-#
-# Run:
-#   python lab1_p0_to_p5_nosensors.py
-# ------------------------------------------------------------
-
 import sys, os, time, math
 sys.path.append(os.path.join(os.path.dirname(__file__), "src"))
 from robot_systems.robot import HamBot
@@ -37,7 +25,13 @@ WPTS = [
     ( -2.0,  -0.5,  math.pi/2  ),   # P3
     ( -1.0,  -0.5,  3*math.pi/2),   # P4
     ( -0.5,  -1.0,  7*math.pi/4),   # P5
+    (  2.0,  -1.0,  0.0        ),   # P6
+    (  2.0,   0.0,  math.pi/2  ),   # P7
+    (  0.0,   0.0,  math.pi    ),   # P8
+    (  0.0,   1.0,  math.pi/2  ),   # P9
+    ( -2.0,   1.0,  math.pi    ),   # P10
 ]
+
 
 # ----------------- Encoder helpers -----------------
 def enc_wheel_deltas_rad(bot, l0, r0):
@@ -265,6 +259,197 @@ def p4_to_p5(bot):
     print("P4→P5 post-turn: +45° CCW to face +x")
     turn_in_place_by_angle(bot, dtheta_rad=math.pi/4, pct=PCT_TURN, label="P4→P5 post-turn")
 
+def p5_to_p6(bot):
+    """
+    Encoder-only P5→P6:
+      Turn to match target heading, then straight distance from WPTS.
+    """
+    x1, y1, th1 = WPTS[5]   # P5
+    x2, y2, th2 = WPTS[6]   # P6
+
+    # --- Step 1: Heading change ---
+    dtheta = th2 - th1
+    dtheta = ((dtheta + math.pi) % (2*math.pi)) - math.pi  # normalize to [-π, π]
+    print(f"\nP5→P6 turn: Δθ={math.degrees(dtheta):+.1f}°")
+    turn_in_place_by_angle(bot, dtheta_rad=dtheta, pct=PCT_TURN, label="P5→P6 turn")
+
+    bot.stop_motors(); time.sleep(0.12)
+
+    # --- Step 2: Straight distance ---
+    d_ft = math.hypot(x2 - x1, y2 - y1)
+    print(f"P5→P6 straight: {d_ft:.4f} ft")
+    drive_straight_feet(bot, d_ft, pct=PCT_STRAIGHT, label="P5→P6 straight")
+
+    bot.stop_motors()
+    print(f"P5→P6: done; now at {WPTS[6]}")
+
+
+def p6_to_p7(bot):
+    """
+    Encoder-only P6→P7:
+      Turn to match target heading, then straight distance from WPTS.
+    """
+    x1, y1, th1 = WPTS[6]   # P6
+    x2, y2, th2 = WPTS[7]   # P7
+
+    # --- Step 1: Heading change ---
+    dtheta = th2 - th1
+    dtheta = ((dtheta + math.pi) % (2*math.pi)) - math.pi  # normalize
+    print(f"\nP6→P7 turn: Δθ={math.degrees(dtheta):+.1f}°")
+    turn_in_place_by_angle(bot, dtheta_rad=dtheta, pct=PCT_TURN, label="P6→P7 turn")
+
+    bot.stop_motors(); time.sleep(0.12)
+
+    # --- Step 2: Straight distance ---
+    d_ft = math.hypot(x2 - x1, y2 - y1)
+    print(f"P6→P7 straight: {d_ft:.4f} ft")
+    drive_straight_feet(bot, d_ft, pct=PCT_STRAIGHT, label="P6→P7 straight")
+
+    bot.stop_motors()
+    print(f"P6→P7: done; now at {WPTS[7]}")
+
+def p7_to_p8(bot):
+    """
+    Encoder-only P7→P8:
+      Turn to match target heading, then straight distance from WPTS.
+    """
+    x1, y1, th1 = WPTS[7]   # P7
+    x2, y2, th2 = WPTS[8]   # P8
+
+    # --- Step 1: Heading change ---
+    dtheta = th2 - th1
+    dtheta = ((dtheta + math.pi) % (2*math.pi)) - math.pi  # normalize to [-π,π]
+    print(f"\nP7→P8 turn: Δθ={math.degrees(dtheta):+.1f}°")
+    turn_in_place_by_angle(bot, dtheta_rad=dtheta, pct=PCT_TURN, label="P7→P8 turn")
+
+    bot.stop_motors(); time.sleep(0.12)
+
+    # --- Step 2: Straight distance ---
+    d_ft = math.hypot(x2 - x1, y2 - y1)
+    print(f"P7→P8 straight: {d_ft:.4f} ft")
+    drive_straight_feet(bot, d_ft, pct=PCT_STRAIGHT, label="P7→P8 straight")
+
+    bot.stop_motors()
+    print(f"P7→P8: done; now at {WPTS[8]}")
+def p8_to_p9(bot):
+    """
+    Encoder-only P8→P9:
+      -90° (right) turn, then 1.0 ft straight.
+    """
+    x1, y1, th1 = WPTS[8]   # P8
+    x2, y2, th2 = WPTS[9]   # P9
+
+    # --- Step 1: Heading change ---
+    dtheta = th2 - th1
+    dtheta = ((dtheta + math.pi) % (2*math.pi)) - math.pi
+    print(f"\nP8→P9 turn: Δθ={math.degrees(dtheta):+.1f}°")
+    turn_in_place_by_angle(bot, dtheta_rad=dtheta, pct=PCT_TURN, label="P8→P9 turn")
+
+    bot.stop_motors(); time.sleep(0.12)
+
+    # --- Step 2: Straight distance ---
+    d_ft = math.hypot(x2 - x1, y2 - y1)
+    print(f"P8→P9 straight: {d_ft:.4f} ft")
+    drive_straight_feet(bot, d_ft, pct=PCT_STRAIGHT, label="P8→P9 straight")
+
+    bot.stop_motors()
+    print(f"P8→P9: done; now at {WPTS[9]}")
+
+
+def p9_to_p10(bot):
+    """
+    Encoder-only P9→P10:
+      +90° (left) turn, then 2.0 ft straight.
+    """
+    x1, y1, th1 = WPTS[9]   # P9
+    x2, y2, th2 = WPTS[10]  # P10
+
+    # --- Step 1: Heading change ---
+    dtheta = th2 - th1
+    dtheta = ((dtheta + math.pi) % (2*math.pi)) - math.pi
+    print(f"\nP9→P10 turn: Δθ={math.degrees(dtheta):+.1f}°")
+    turn_in_place_by_angle(bot, dtheta_rad=dtheta, pct=PCT_TURN, label="P9→P10 turn")
+
+    bot.stop_motors(); time.sleep(0.12)
+
+    # --- Step 2: Straight distance ---
+    d_ft = math.hypot(x2 - x1, y2 - y1)
+    print(f"P9→P10 straight: {d_ft:.4f} ft")
+    drive_straight_feet(bot, d_ft, pct=PCT_STRAIGHT, label="P9→P10 straight")
+
+    bot.stop_motors()
+    print(f"P9→P10: done; now at {WPTS[10]}")
+
+def p10_to_p11(bot):
+    """
+    P10 → P11:
+      1) +90° CCW pre-turn to face +y (north)
+      2) 90° RIGHT (clockwise) quarter-circle arc to reach (-1, 2) facing +x (east)
+    Geometry is derived from WPTS; no straight segments.
+    """
+    # Waypoints
+    x1, y1, th1 = WPTS[10]   # P10 = (-2.0, 1.0, π)
+    x2, y2, th2 = WPTS[11]   # P11 = (-1.0, 2.0, 0)
+
+    # ---------- Step 1: Pre-turn to face north (π/2) ----------
+    th_mid = math.pi / 2  # north
+    dtheta1 = ((th_mid - th1 + math.pi) % (2*math.pi)) - math.pi
+    print(f"\nP10→P11 pre-turn: Δθ₁={math.degrees(dtheta1):+.1f}° to face north")
+    turn_in_place_by_angle(bot, dtheta_rad=dtheta1, pct=PCT_TURN, label="P10→P11 pre-turn")
+    bot.stop_motors(); time.sleep(0.12)
+
+    # ---------- Step 2: Quarter-circle RIGHT arc ----------
+    # From north to east with Δx=+1, Δy=+1 ⇒ radius R = 1.0 ft (quarter circle)
+    dx_ft, dy_ft = (x2 - x1), (y2 - y1)              # (+1, +1)
+    c_ft  = math.hypot(dx_ft, dy_ft)                 # chord = √2 ft
+    R_ft  = c_ft / math.sqrt(2.0)                    # R = 1.0 ft for a 90° arc
+    R_m   = R_ft * FT2M
+    Theta = math.pi / 2.0                            # 90° magnitude
+
+    # Right (inner) / Left (outer) radii for a RIGHT (clockwise) arc
+    inner = R_m - AXLE_LEN_M/2.0
+    outer = R_m + AXLE_LEN_M/2.0
+    if inner <= 0:
+        print("[WARN] Arc radius too small for axle length; increase R or adjust path.")
+
+    sR = Theta * inner   # right wheel (shorter path)
+    sL = Theta * outer   # left wheel  (longer path)
+
+    print(f"P10→P11 arc geometry: chord={c_ft:.4f} ft, R={R_ft:.4f} ft ({R_m:.4f} m)")
+    print(f"Wheel targets: L={sL:.4f} m, R={sR:.4f} m  (RIGHT turn, both forward)")
+    drive_arc_by_wheel_dists(bot, sL, sR, base_pct=PCT_ARC, label="P10→P11 quarter arc")
+
+    bot.stop_motors(); time.sleep(0.10)
+
+    # (Optional) tiny final trim to th2 if you want:
+    # dtheta2 = ((th2 - 0.0 + math.pi) % (2*math.pi)) - math.pi  # expected 0
+    # turn_in_place_by_angle(bot, dtheta_rad=dtheta2, pct=PCT_TURN*0.8, label="P10→P11 final trim")
+
+    print(f"P10→P11: done; now at {WPTS[11]} (expected)")
+
+def p11_to_p12(bot):
+    """
+    Encoder-only P11→P12:
+      Heading stays 0 rad (east). Drive straight |Δ| from WPTS.
+    """
+    x1, y1, th1 = WPTS[11]   # P11 = (-1.0, 2.0, 0)
+    x2, y2, th2 = WPTS[12]   # P12 = ( 1.5, 2.0, 0)
+
+    # Turn needed (should be ~0, but keep logic generic)
+    dtheta = ((th2 - th1 + math.pi) % (2*math.pi)) - math.pi
+    if abs(dtheta) > 1e-3:
+        print(f"\nP11→P12 trim turn: Δθ={math.degrees(dtheta):+.1f}°")
+        turn_in_place_by_angle(bot, dtheta_rad=dtheta, pct=PCT_TURN, label="P11→P12 turn")
+        bot.stop_motors(); time.sleep(0.12)
+
+    # Straight distance from waypoints
+    d_ft = math.hypot(x2 - x1, y2 - y1)  # should be 2.5 ft
+    print(f"P11→P12 straight: {d_ft:.4f} ft along +x")
+    drive_straight_feet(bot, d_ft, pct=PCT_STRAIGHT, label="P11→P12 straight")
+
+    bot.stop_motors()
+    print(f"P11→P12: done; now at {WPTS[12]}")
+
 # ----------------- Main -----------------
 def main():
     bot = HamBot(lidar_enabled=False, camera_enabled=False)
@@ -283,6 +468,27 @@ def main():
 
         print("\n=== P4 → P5 (turn, straight, turn) ===")
         p4_to_p5(bot)
+
+        print("\n=== P5 → P6 (turn, straight) ===")
+        p5_to_p6(bot)
+
+        print("\n=== P6 → P7 (turn, straight) ===")
+        p6_to_p7(bot)
+
+        print("\n=== P7 → P8 (turn, straight) ===")
+        p7_to_p8(bot)
+
+        print("\n=== P8 → P9 (turn, straight) ===")
+        p8_to_p9(bot)
+
+        print("\n=== P9 → P10 (turn, straight) ===")
+        p9_to_p10(bot)
+
+        print("\n=== P10 → P11 (pre-turn, quarter arc) ===")
+        p10_to_p11(bot)
+
+        print("\n=== P11 → P12 (straight) ===")
+        p11_to_p12(bot)
 
         print("\nDone.")
     finally:
