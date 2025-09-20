@@ -5,9 +5,9 @@ from robot_systems.robot import HamBot
 # ----------------- Robot constants -----------------
 R_WHEEL_M    = 0.045    # wheel radius [m]
 AXLE_LEN_M   = 0.184    # wheel spacing [m]
-PCT_STRAIGHT = 60.0     # base power for straight (%)
-PCT_ARC      = 60.0     # base power for arcs (%)
-PCT_TURN     = 40.0     # base power for in-place turns (%)
+PCT_STRAIGHT = 30.0     # base power for straight (%)
+PCT_ARC      = 30.0     # base power for arcs (%)
+PCT_TURN     = 30.0     # base power for in-place turns (%)
 FT2M         = 0.3048
 
 # Encoders: your hardware reports radians (from your quick check)
@@ -243,29 +243,43 @@ def p3_to_p4_arc(bot):
     drive_arc_by_wheel_dists(bot, sL, sR, base_pct=PCT_ARC, label="P3→P4 arc")
 
 def p4_to_p5(bot):
-    """
-    EXACT sequence with encoders only (no IMU):
-      +45° left (π/4) -> straight 0.7071 ft -> +45° left (π/4).
-    """
-    # 1) +45° CCW pre-turn (encoder-based spin)
-    print("\nP4→P5 pre-turn: +45° CCW")
-    turn_in_place_by_angle(bot, dtheta_rad=math.pi/4, pct=PCT_TURN, label="P4→P5 pre-turn")
+        """
+        P4 → P5 (encoder-only):
+            1) +45° CCW pre-turn (π/4)
+            2) straight along diagonal ≈ 0.7071 ft
 
-    # brief settle
-    bot.stop_motors(); time.sleep(0.12)
+        The function performs a single pre-turn then the straight leg. If you
+        observe a systematic overshoot on hardware, use the optional IMU trim
+        (commented) below to correct residual heading error after the straight.
+        """
 
-    # 2) straight along the diagonal: d = sqrt(0.5) ft
-    d_ft = math.sqrt(0.5)
-    print(f"P4→P5 straight: {d_ft:.4f} ft (0.7071 ft expected)")
-    drive_straight_feet(bot, d_ft, pct=PCT_STRAIGHT, label="P4→P5 straight")
+        # 1) +45° CCW pre-turn (encoder-based spin)
+        print("\nP4→P5 pre-turn: +45° CCW")
+        turn_in_place_by_angle(bot, dtheta_rad=math.pi/4, pct=PCT_TURN, label="P4→P5 pre-turn")
 
-    # brief settle
-    bot.stop_motors(); time.sleep(0.12)
+        # brief settle
+        bot.stop_motors(); time.sleep(0.12)
 
-    # 3) +45° CCW post-turn to face +x
-    print("P4→P5 post-turn: +45° CCW to face +x")
-    turn_in_place_by_angle(bot, dtheta_rad=math.pi/4, pct=PCT_TURN, label="P4→P5 post-turn")
+        # 2) straight along the diagonal: d = sqrt(0.5) ft
+        d_ft = math.sqrt(0.5)
+        print(f"P4→P5 straight: {d_ft:.4f} ft (0.7071 ft expected)")
+        drive_straight_feet(bot, d_ft, pct=PCT_STRAIGHT, label="P4→P5 straight")
 
+        # brief settle
+        bot.stop_motors(); time.sleep(0.12)
+
+        # Optional IMU-based trim (uncomment and adapt if IMU is available on `bot`):
+        # try:
+        #     # waypoint heading at P5 in degrees-from-east
+        #     target_deg = (math.degrees(WPTS[5][2]) + 360.0) % 360.0
+        #     cur_deg = bot.imu.get_heading_cached()  # or bot.imu.get_heading()
+        #     if cur_deg is not None:
+        #         ddeg = ((target_deg - cur_deg + 180.0) % 360.0) - 180.0
+        #         if abs(ddeg) > 1.0:
+        #             print(f"P4→P5 IMU trim: Δ={ddeg:.1f}°")
+        #             turn_in_place_by_angle(bot, math.radians(ddeg), pct=PCT_TURN*0.6, label="P4→P5 IMU trim")
+        # except Exception:
+        #     pass
 def p5_to_p6(bot):
     """
     Encoder-only P5→P6:
@@ -461,17 +475,17 @@ def p11_to_p12(bot):
 def main():
     bot = HamBot(lidar_enabled=False, camera_enabled=False)
     try:
-        print("\n=== P0 → P1 (straight) ===")
-        p0_to_p1(bot)
+        # print("\n=== P0 → P1 (straight) ===")
+        # p0_to_p1(bot)
 
-        print("\n=== P1 → P2 (quarter right arc) ===")
-        p1_to_p2_arc(bot)
+        # print("\n=== P1 → P2 (quarter right arc) ===")
+        # p1_to_p2_arc(bot)
 
-        print("\n=== P2 → P3 (straight 1.0 ft up) ===")
-        p2_to_p3(bot)
+        # print("\n=== P2 → P3 (straight 1.0 ft up) ===")
+        # p2_to_p3(bot)
 
-        print("\n=== P3 → P4 (half-circle right arc) ===")
-        p3_to_p4_arc(bot)
+        # print("\n=== P3 → P4 (half-circle right arc) ===")
+        # p3_to_p4_arc(bot)
 
         print("\n=== P4 → P5 (turn, straight, turn) ===")
         p4_to_p5(bot)
@@ -479,23 +493,23 @@ def main():
         print("\n=== P5 → P6 (turn, straight) ===")
         p5_to_p6(bot)
 
-        print("\n=== P6 → P7 (turn, straight) ===")
-        p6_to_p7(bot)
+        # print("\n=== P6 → P7 (turn, straight) ===")
+        # p6_to_p7(bot)
 
-        print("\n=== P7 → P8 (turn, straight) ===")
-        p7_to_p8(bot)
+        # print("\n=== P7 → P8 (turn, straight) ===")
+        # p7_to_p8(bot)
 
-        print("\n=== P8 → P9 (turn, straight) ===")
-        p8_to_p9(bot)
+        # print("\n=== P8 → P9 (turn, straight) ===")
+        # p8_to_p9(bot)
 
-        print("\n=== P9 → P10 (turn, straight) ===")
-        p9_to_p10(bot)
+        # print("\n=== P9 → P10 (turn, straight) ===")
+        # p9_to_p10(bot)
 
-        print("\n=== P10 → P11 (pre-turn, quarter arc) ===")
-        p10_to_p11(bot)
+        # print("\n=== P10 → P11 (pre-turn, quarter arc) ===")
+        # p10_to_p11(bot)
 
-        print("\n=== P11 → P12 (straight) ===")
-        p11_to_p12(bot)
+        # print("\n=== P11 → P12 (straight) ===")
+        # p11_to_p12(bot)
 
         print("\nDone.")
     finally:
