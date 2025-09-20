@@ -30,7 +30,10 @@ WPTS = [
     (  0.0,   0.0,  math.pi    ),   # P8
     (  0.0,   1.0,  math.pi/2  ),   # P9
     ( -2.0,   1.0,  math.pi    ),   # P10
+    ( -1.0,   2.0,  0.0        ),   # P11
+    (  1.5,   2.0,  0.0        ),   # P12
 ]
+
 
 
 # ----------------- Encoder helpers -----------------
@@ -454,17 +457,17 @@ def p11_to_p12(bot):
 def main():
     bot = HamBot(lidar_enabled=False, camera_enabled=False)
     try:
-        # print("\n=== P0 → P1 (straight) ===")
-        # p0_to_p1(bot)
+        print("\n=== P0 → P1 (straight) ===")
+        p0_to_p1(bot)
 
-        # print("\n=== P1 → P2 (quarter right arc) ===")
-        # p1_to_p2_arc(bot)
+        print("\n=== P1 → P2 (quarter right arc) ===")
+        p1_to_p2_arc(bot)
 
-        # print("\n=== P2 → P3 (straight 1.0 ft up) ===")
-        # p2_to_p3(bot)
+        print("\n=== P2 → P3 (straight 1.0 ft up) ===")
+        p2_to_p3(bot)
 
-        # print("\n=== P3 → P4 (half-circle right arc) ===")
-        # p3_to_p4_arc(bot)
+        print("\n=== P3 → P4 (half-circle right arc) ===")
+        p3_to_p4_arc(bot)
 
         print("\n=== P4 → P5 (turn, straight, turn) ===")
         p4_to_p5(bot)
