@@ -105,13 +105,20 @@ def drive_straight_feet(bot, dist_ft, pct=PCT_STRAIGHT, label="straight(ft)",
     bot.stop_motors()
     print(f"{label}: done (meas ≈ {s_center:.3f} m)")
 
-def turn_in_place_by_angle(bot, dtheta_rad, pct=PCT_TURN, label="spin"):
+def turn_in_place_by_angle(bot, dtheta_rad, pct=PCT_TURN, label="spin", shrink_pct=0.0):
     """
     Encoder-only in-place spin by dtheta (rad). + = CCW (left), − = CW (right).
-    Targets per-wheel distances: sR = + (L/2)*dθ, sL = − (L/2)*dθ.
-    Equal & opposite motor commands to avoid forward creep.
+
+    shrink_pct: fractional under-turn (e.g., 0.02 = 2% smaller angle).
+                Useful when the hardware coasts a bit and overshoots.
     """
+    # --- normalize requested angle ---
     dtheta = ((dtheta_rad + math.pi) % (2*math.pi)) - math.pi
+
+    # --- apply under-turn trim (keeps sign) ---
+    if shrink_pct != 0.0:
+        dtheta = math.copysign(abs(dtheta) * max(0.0, 1.0 - float(shrink_pct)), dtheta)
+
     if abs(dtheta) < math.radians(1.0):
         print(f"{label}: skip (|Δθ| < 1°)")
         return
@@ -120,13 +127,13 @@ def turn_in_place_by_angle(bot, dtheta_rad, pct=PCT_TURN, label="spin"):
     sL_target = -(AXLE_LEN_M/2.0) * dtheta
     dir = 1.0 if dtheta > 0 else -1.0  # +CCW: left back, right fwd
 
-    print(f"{label}: target Δθ={math.degrees(dtheta):+.1f}°, sL={sL_target:+.4f} m, sR={sR_target:+.4f} m")
+    print(f"{label}: target Δθ={math.degrees(dtheta):+.2f}°, sL={sL_target:+.4f} m, sR={sR_target:+.4f} m")
 
     l0, r0 = bot.get_encoder_readings()
-    bot.set_left_motor_speed( _clamp_pct(-dir * abs(pct)) )
-    bot.set_right_motor_speed(_clamp_pct(+dir * abs(pct)) )
+    bot.set_left_motor_speed(  _clamp_pct(-dir * abs(pct)) )
+    bot.set_right_motor_speed( _clamp_pct(+dir * abs(pct)) )
 
-    # taper in last 0.02 m of either wheel
+    # taper in last 0.02 m on either wheel
     while True:
         sL, sR = enc_wheel_progress_m(bot, l0, r0)
         remL = abs(sL_target) - abs(sL)
@@ -134,8 +141,8 @@ def turn_in_place_by_angle(bot, dtheta_rad, pct=PCT_TURN, label="spin"):
         rem_min = max(0.0, min(remL, remR))
 
         scale = 1.0 if rem_min > 0.02 else max(0.35, rem_min / 0.02)
-        bot.set_left_motor_speed( _clamp_pct(-dir * abs(pct) * scale) )
-        bot.set_right_motor_speed(_clamp_pct(+dir * abs(pct) * scale) )
+        bot.set_left_motor_speed(  _clamp_pct(-dir * abs(pct) * scale) )
+        bot.set_right_motor_speed( _clamp_pct(+dir * abs(pct) * scale) )
 
         if (abs(sL) >= abs(sL_target) - 1e-3) and (abs(sR) >= abs(sR_target) - 1e-3):
             break
@@ -288,11 +295,13 @@ def p5_to_p6(bot):
     x1, y1, th1 = WPTS[5]   # P5
     x2, y2, th2 = WPTS[6]   # P6
 
-    # --- Step 1: Heading change ---
-    dtheta = th2 - th1
-    dtheta = ((dtheta + math.pi) % (2*math.pi)) - math.pi  # normalize to [-π, π]
-    print(f"\nP5→P6 turn: Δθ={math.degrees(dtheta):+.1f}°")
-    turn_in_place_by_angle(bot, dtheta_rad=dtheta, pct=PCT_TURN, label="P5→P6 turn")
+    # # --- Step 1: Heading change ---
+    # dtheta = th2 - th1
+    # dtheta = ((dtheta + math.pi) % (2*math.pi)) - math.pi  # normalize to [-π, π]
+    # print(f"\nP5→P6 turn: Δθ={math.degrees(dtheta):+.1f}°")
+    turn_in_place_by_angle(bot, math.radians(45.0), pct=PCT_TURN, shrink_pct=0.1, label="pre-turn 45° (-2%)")
+
+    # turn_in_place_by_angle(bot, dtheta_rad=dtheta, pct=PCT_TURN, label="P5→P6 turn")
 
     bot.stop_motors(); time.sleep(0.12)
 
