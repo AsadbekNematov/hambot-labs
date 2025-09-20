@@ -73,6 +73,8 @@ def drive_straight_feet(bot, dist_ft, pct=PCT_STRAIGHT, label="straight(ft)",
     base = +pct if dist_m >= 0 else -pct
     l0, r0 = bot.get_encoder_readings()
 
+    # no IMU/heading-hold in encoder-only version
+
     while True:
         # progress (per-wheel) and center distance
         sL, sR = enc_wheel_progress_m(bot, l0, r0)         # meters
@@ -83,6 +85,8 @@ def drive_straight_feet(bot, dist_ft, pct=PCT_STRAIGHT, label="straight(ft)",
         # encoder balance (push the slower side a bit)
         diff = sR - sL                                     # + if right > left
         turn_pct = max(-8.0, min(8.0, K_bal * diff))
+
+        # (no IMU heading-hold; only encoder balance is used)
 
         # ----- trapezoid scaling -----
         # ramp-up based on how far we've gone
@@ -179,11 +183,11 @@ def drive_arc_by_wheel_dists(bot, sL_m, sR_m, base_pct=PCT_ARC, label="arc"):
 
 # ----------------- Leg-specific functions -----------------
 def p0_to_p1(bot):
-    """Straight from P0 to P1 using heading hold."""
+    """Straight from P0 to P1 (encoder-only)."""
     x1_ft, y1_ft, _ = WPTS[0]
     x2_ft, y2_ft, _ = WPTS[1]
     d_ft = math.hypot(x2_ft - x1_ft, y2_ft - y1_ft)  # 3.5 ft
-    drive_straight_feet(bot, d_ft, pct=PCT_STRAIGHT, kp_heading=1.6, label="P0→P1")
+    drive_straight_feet(bot, d_ft, pct=PCT_STRAIGHT, label="P0→P1")
 
 def p1_to_p2_arc(bot):
     """Perfect quarter RIGHT arc from P1 to P2 computed from waypoints. No trim."""
@@ -212,7 +216,7 @@ def p2_to_p3(bot):
     x1_ft, y1_ft, _ = WPTS[2]
     x2_ft, y2_ft, _ = WPTS[3]
     d_ft = math.hypot(x2_ft - x1_ft, y2_ft - y1_ft)  # should be 1.0 ft
-    drive_straight_feet(bot, d_ft, pct=PCT_STRAIGHT, kp_heading=1.6, label="P2→P3")
+    drive_straight_feet(bot, d_ft, pct=PCT_STRAIGHT, label="P2→P3")
 
 def p3_to_p4_arc(bot):
     """Perfect 180° RIGHT (clockwise) arc from P3 to P4 computed from waypoints. No trim."""
