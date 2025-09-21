@@ -525,7 +525,9 @@ def p7_to_p8(bot):
     dtheta = th2 - th1
     dtheta = ((dtheta + math.pi) % (2*math.pi)) - math.pi  # normalize to [-π,π]
     print(f"\nP7→P8 turn: Δθ={math.degrees(dtheta):+.1f}°")
-    turn_in_place_by_angle(bot, dtheta_rad=dtheta, pct=PCT_TURN, label="P7→P8 turn")
+    # turn_in_place_by_angle(bot, dtheta_rad=dtheta, pct=PCT_TURN, label="P7→P8 turn")
+    turn_to_absolute_heading_imu(bot, target_heading_rad=dtheta, label="P7→P8 turn (IMU)")
+
 
     bot.stop_motors(); time.sleep(0.12)
 
@@ -548,7 +550,9 @@ def p8_to_p9(bot):
     dtheta = th2 - th1
     dtheta = ((dtheta + math.pi) % (2*math.pi)) - math.pi
     print(f"\nP8→P9 turn: Δθ={math.degrees(dtheta):+.1f}°")
-    turn_in_place_by_angle(bot, dtheta_rad=dtheta, pct=PCT_TURN, label="P8→P9 turn")
+    # turn_in_place_by_angle(bot, dtheta_rad=dtheta, pct=PCT_TURN, label="P8→P9 turn")
+    turn_to_absolute_heading_imu(bot, target_heading_rad=dtheta, label="P8→P9 turn (IMU)")
+
 
     bot.stop_motors(); time.sleep(0.12)
 
@@ -573,7 +577,8 @@ def p9_to_p10(bot):
     dtheta = th2 - th1
     dtheta = ((dtheta + math.pi) % (2*math.pi)) - math.pi
     print(f"\nP9→P10 turn: Δθ={math.degrees(dtheta):+.1f}°")
-    turn_in_place_by_angle(bot, dtheta_rad=dtheta, pct=PCT_TURN, label="P9→P10 turn")
+    # turn_in_place_by_angle(bot, dtheta_rad=dtheta, pct=PCT_TURN, label="P9→P10 turn")
+    turn_to_absolute_heading_imu(bot, target_heading_rad=dtheta, label="P9→P10 turn (IMU)")
 
     bot.stop_motors(); time.sleep(0.12)
 
@@ -600,7 +605,9 @@ def p10_to_p11(bot):
     th_mid = math.pi / 2  # north
     dtheta1 = ((th_mid - th1 + math.pi) % (2*math.pi)) - math.pi
     print(f"\nP10→P11 pre-turn: Δθ₁={math.degrees(dtheta1):+.1f}° to face north")
-    turn_in_place_by_angle(bot, dtheta_rad=dtheta1, pct=PCT_TURN, label="P10→P11 pre-turn")
+    # turn_in_place_by_angle(bot, dtheta_rad=dtheta1, pct=PCT_TURN, label="P10→P11 pre-turn")
+    turn_to_absolute_heading_imu(bot, target_heading_rad=dtheta1, label="P10→P11 turn (IMU)")
+
     bot.stop_motors(); time.sleep(0.12)
 
     # ---------- Step 2: Quarter-circle RIGHT arc ----------
@@ -659,20 +666,20 @@ def p11_to_p12(bot):
 def main():
     bot = HamBot(lidar_enabled=False, camera_enabled=False)
     try:
-        # print("\n=== P0 → P1 (straight) ===")
-        # p0_to_p1(bot)
+        print("\n=== P0 → P1 (straight) ===")
+        p0_to_p1(bot)
 
-        # print("\n=== P1 → P2 (quarter right arc) ===")
-        # p1_to_p2_arc(bot)
+        print("\n=== P1 → P2 (quarter right arc) ===")
+        p1_to_p2_arc(bot)
 
-        # print("\n=== P2 → P3 (straight 1.0 ft up) ===")
-        # p2_to_p3(bot)
+        print("\n=== P2 → P3 (straight 1.0 ft up) ===")
+        p2_to_p3(bot)
 
-        # print("\n=== P3 → P4 (half-circle right arc) ===")
-        # p3_to_p4_arc(bot)
+        print("\n=== P3 → P4 (half-circle right arc) ===")
+        p3_to_p4_arc(bot)
 
-        # print("\n=== P4 → P5 (turn, straight, turn) ===")
-        # p4_to_p5(bot)
+        print("\n=== P4 → P5 (turn, straight, turn) ===")
+        p4_to_p5(bot)
 
         print("\n=== P5 → P6 (turn, straight) ===")
         p5_to_p6(bot)
@@ -689,11 +696,11 @@ def main():
         print("\n=== P9 → P10 (turn, straight) ===")
         p9_to_p10(bot)
 
-        # print("\n=== P10 → P11 (pre-turn, quarter arc) ===")
-        # p10_to_p11(bot)
+        print("\n=== P10 → P11 (pre-turn, quarter arc) ===")
+        p10_to_p11(bot)
 
-        # print("\n=== P11 → P12 (straight) ===")
-        # p11_to_p12(bot)
+        print("\n=== P11 → P12 (straight) ===")
+        p11_to_p12(bot)
 
         print("\nDone.")
     finally:
