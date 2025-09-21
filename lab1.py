@@ -1,6 +1,8 @@
 import sys, os, time, math
 sys.path.append(os.path.join(os.path.dirname(__file__), "src"))
-from robot_systems.robot import HamBot
+from src.robot_systems.robot import HamBot
+from src.robot_systems.imu import IMU
+
 
 # ----------------- Robot constants -----------------
 R_WHEEL_M    = 0.045    # wheel radius [m]
@@ -16,6 +18,163 @@ ENC_SIGN_L   = +1.0
 ENC_SIGN_R   = +1.0
 
 def _clamp_pct(x): return max(-100.0, min(100.0, x))
+# ----------------- IMU helpers -----------------
+def _norm_deg_0_360(a_deg: float) -> float:
+    return a_deg % 360.0
+
+def _norm_deg_m180_180(a_deg: float) -> float:
+    a = (a_deg + 180.0) % 360.0 - 180.0
+    # map -180 exactly to +180 for a unique rep (optional)
+    return 180.0 if abs(a + 180.0) < 1e-9 else a
+
+def _shortest_err_deg(target_deg: float, cur_deg: float) -> float:
+    """Return signed error (target - current) in [-180, +180] deg."""
+    return _norm_deg_m180_180(target_deg - cur_deg)
+
+def _ensure_imu_on(bot, poll_hz: float = 40.0, warmup_s: float = 0.5):
+    """
+    Attach and start an IMU if not already present.
+    Exposes bot.imu with .get_heading(...) as in imu.py.
+    """
+    if getattr(bot, "imu", None) is None:
+        bot.imu = IMU(poll_hz=poll_hz, warmup_s=warmup_s)
+        bot.imu.start()
+
+def imu_get_heading_deg(bot, fresh_within=0.3, blocking=True, wait_timeout=0.5):
+    """
+    Read heading (degrees-from-East, 0..360) from IMU cache.
+    Returns None if unavailable.
+    """
+    _ensure_imu_on(bot)
+    h = bot.imu.get_heading(fresh_within=fresh_within,
+                            blocking=blocking,
+                            wait_timeout=wait_timeout)
+    return None if h is None else float(h)
+
+# ----------------- IMU-closed-loop turn primitives -----------------
+def turn_in_place_by_angle_imu(bot,
+                               dtheta_rad: float,
+                               fast_pct: float = 18.0,
+                               slow_pct: float = 8.0,
+                               kp_pct_per_deg: float = 1.8,
+                               min_overcome_pct: float = 6.0,
+                               settle_deg: float = 1.0,
+                               settle_time_s: float = 0.20,
+                               timeout_s: float = 6.0,
+                               label: str = "IMU spin (relative)"):
+    """
+    Closed-loop in-place turn using IMU heading.
+      dtheta_rad: +CCW (left), -CW (right)
+      fast_pct:   max magnitude at large error
+      slow_pct:   max magnitude when |err| < 8°
+      kp_pct_per_deg: proportional gain -> motor % = kp * err
+      min_overcome_pct: minimum |%| to overcome stiction
+      settle_deg: stop when |err| <= settle_deg for settle_time_s
+      timeout_s: safety cutoff
+    """
+    _ensure_imu_on(bot)
+
+    # Wait for a valid current heading
+    cur = imu_get_heading_deg(bot, blocking=True)
+    if cur is None:
+        print(f"{label}: IMU not ready; aborting")
+        return
+
+    dtheta_deg = math.degrees(dtheta_rad)
+    target = _norm_deg_0_360(cur + dtheta_deg)
+    _turn_to_heading_imu(bot, target, fast_pct, slow_pct, kp_pct_per_deg,
+                         min_overcome_pct, settle_deg, settle_time_s,
+                         timeout_s, label=label)
+
+def turn_to_absolute_heading_imu(bot,
+                                 target_heading_rad: float,
+                                 fast_pct: float = 18.0,
+                                 slow_pct: float = 8.0,
+                                 kp_pct_per_deg: float = 1.8,
+                                 min_overcome_pct: float = 6.0,
+                                 settle_deg: float = 1.0,
+                                 settle_time_s: float = 0.20,
+                                 timeout_s: float = 6.0,
+                                 label: str = "IMU spin (absolute)"):
+    """
+    Turn in place until absolute heading (radians-from-East) is reached.
+    """
+    _ensure_imu_on(bot)
+    target_deg = _norm_deg_0_360(math.degrees(target_heading_rad))
+    _turn_to_heading_imu(bot, target_deg, fast_pct, slow_pct, kp_pct_per_deg,
+                         min_overcome_pct, settle_deg, settle_time_s,
+                         timeout_s, label=label)
+
+def _turn_to_heading_imu(bot,
+                         target_deg: float,
+                         fast_pct: float,
+                         slow_pct: float,
+                         kp_pct_per_deg: float,
+                         min_overcome_pct: float,
+                         settle_deg: float,
+                         settle_time_s: float,
+                         timeout_s: float,
+                         label: str):
+    """
+    Core IMU closed-loop heading controller with taper & settle window.
+    """
+    print(f"{label}: target={target_deg:.2f}°")
+    t0 = time.time()
+    settle_start = None
+
+    # Use a shorter dt for smoother control
+    dt = 0.01
+    try:
+        while True:
+            cur = imu_get_heading_deg(bot, fresh_within=0.25, blocking=True, wait_timeout=0.3)
+            if cur is None:
+                # If temporarily missing, don't jerk motors; just continue
+                bot.set_left_motor_speed(0); bot.set_right_motor_speed(0)
+                time.sleep(dt)
+                if time.time() - t0 > timeout_s:
+                    print(f"{label}: timeout (IMU data missing)")
+                    break
+                continue
+
+            err = _shortest_err_deg(target_deg, cur)  # signed in [-180,180]
+            aerr = abs(err)
+
+            # Proportional term -> raw % command
+            cmd = kp_pct_per_deg * err
+
+            # Taper max output near target
+            cap = slow_pct if aerr < 8.0 else fast_pct
+            cmd = max(-cap, min(cap, cmd))
+
+            # Ensure we overcome stiction but don't exceed caps
+            if abs(cmd) < min_overcome_pct and aerr > settle_deg:
+                cmd = math.copysign(min_overcome_pct, cmd if cmd != 0 else err)
+
+            # Left motor negative, Right motor positive yields CCW (based on your earlier convention)
+            bot.set_left_motor_speed( _clamp_pct(-cmd) )
+            bot.set_right_motor_speed(_clamp_pct(+cmd) )
+
+            # Settle logic: hold inside a small window for a short time
+            if aerr <= settle_deg:
+                if settle_start is None:
+                    settle_start = time.time()
+                elif (time.time() - settle_start) >= settle_time_s:
+                    break
+            else:
+                settle_start = None
+
+            if time.time() - t0 > timeout_s:
+                print(f"{label}: timeout (|err|~{aerr:.2f}°); stopping at cur={cur:.2f}°")
+                break
+
+            time.sleep(dt)
+    finally:
+        bot.stop_motors()
+        # Brief brake time to kill coast
+        time.sleep(0.05)
+        bot.stop_motors()
+        cur = imu_get_heading_deg(bot, blocking=False) or float('nan')
+        print(f"{label}: done, cur≈{cur:.2f}°, err≈{_shortest_err_deg(target_deg, cur):+.2f}°")
 
 # ----------------- Waypoints (feet, radians) -----------------
 WPTS = [
@@ -123,136 +282,8 @@ def turn_in_place_by_angle(bot, dtheta_rad, pct=PCT_TURN, label="spin", shrink_p
         print(f"{label}: skip (|Δθ| < 1°)")
         return
 
-    # Try IMU-based closed-loop heading control when available on `bot`.
-    try:
-        imu = getattr(bot, "imu", None)
-        if imu is not None:
-            # Read a reasonably fresh heading (degrees from East)
-            cur = imu.get_heading(fresh_within=1.0, blocking=True, wait_timeout=0.8)
-            if cur is None:
-                cur = imu.get_heading_cached()
-
-            if cur is not None:
-                target_deg = (cur + math.degrees(dtheta)) % 360.0
-                print(f"{label}: IMU-controlled turn Δθ={math.degrees(dtheta):+.2f}°, target={target_deg:.2f}° (from {cur:.2f}°)")
-
-                # Controller gains & limits
-                Kp = 0.8   # % output per degree of heading error (tunable)
-                min_drive = max(6.0, abs(pct) * 0.12)  # minimum % to overcome stiction
-                max_drive = abs(pct)
-
-                # timeout scales with requested angle magnitude; permit progress-based extensions
-                base_timeout_s = max(2.0, abs(math.degrees(dtheta)) * 0.04 + 0.8)
-                overall_deadline = time.time() + max(base_timeout_s, 3.0)
-                # progress_deadline is the short window we expect continued progress in
-                progress_deadline = time.time() + base_timeout_s
-
-                # Two-stage gains: aggressive when far, gentler when near
-                high_Kp = max(0.9, Kp * 1.4)
-                low_Kp = max(0.35, Kp * 0.6)
-                stage_switch_deg = 15.0  # degrees: switch to fine control inside this
-
-                # Crawl and final-trim settings
-                crawl_deg_threshold = 12.0   # within this deg, enforce crawl
-                min_crawl_pct = max(4.0, abs(pct) * 0.12)
-                success_tol_deg = 1.0
-
-                last_err_abs = None
-
-                while True:
-                    h = imu.get_heading(fresh_within=0.5, blocking=False)
-                    if h is None:
-                        h = imu.get_heading_cached()
-                    if h is None:
-                        # no IMU sample available, abort to encoder fallback
-                        raise RuntimeError("IMU returned no heading samples")
-
-                    # smallest signed error in degrees (-180, 180]
-                    err = ((target_deg - h + 180.0) % 360.0) - 180.0
-                    err_abs = abs(err)
-
-                    # success condition
-                    if err_abs <= success_tol_deg:
-                        break
-
-                    # choose gain based on magnitude
-                    gain = high_Kp if err_abs > stage_switch_deg else low_Kp
-
-                    # compute drive magnitude from error
-                    drive = gain * err_abs
-                    # enforce minimum crawl when near the end to prevent stalling
-                    if err_abs <= crawl_deg_threshold:
-                        drive = max(drive, min_crawl_pct)
-                    # saturate
-                    drive = min(max_drive, max(min_drive, drive))
-
-                    sign = 1.0 if err > 0 else -1.0  # + => need CCW
-
-                    # apply to motors: CCW => left back (negative), right forward (positive)
-                    bot.set_left_motor_speed(_clamp_pct(-sign * drive))
-                    bot.set_right_motor_speed(_clamp_pct(+sign * drive))
-
-                    # progress detection: if error decreases, extend the progress_deadline
-                    if last_err_abs is None or err_abs < last_err_abs - 0.5:
-                        progress_deadline = time.time() + max(0.8, base_timeout_s * 0.5)
-                    last_err_abs = err_abs
-
-                    now = time.time()
-                    # expire when both overall_deadline passed or progress_deadline passed
-                    if now > overall_deadline and now > progress_deadline:
-                        print(f"{label}: IMU control timeout (err={err:.2f}°). last_err={err_abs:.2f}°")
-                        break
-
-                    time.sleep(0.02)
-
-                bot.stop_motors()
-
-                # report measured final heading if available
-                final_h = imu.get_heading(fresh_within=1.0, blocking=False) or imu.get_heading_cached()
-                final_err = None
-                if final_h is not None:
-                    final_err = ((target_deg - final_h + 180.0) % 360.0) - 180.0
-                    achieved = ((final_h - cur + 180.0) % 360.0) - 180.0
-                    print(f"{label}: IMU pass done (achieved Δ={achieved:+.2f}° -> {final_h:.2f}°), residual err={final_err:+.2f}°")
-                else:
-                    print(f"{label}: IMU pass done (IMU used; final heading unknown)")
-
-                # If residual error is still significant, do a tiny IMU-based back-trim
-                if final_err is not None and abs(final_err) > 3.0:
-                    trim_deg = final_err
-                    # perform a short, lower-power trim with tight tolerance
-                    trim_target = (final_h + trim_deg) % 360.0
-                    trim_deadline = time.time() + max(1.0, abs(trim_deg) * 0.05 + 0.5)
-                    trim_tol = 0.8
-                    trim_pct = max(4.0, abs(pct) * 0.5)
-                    print(f"{label}: performing IMU back-trim Δ={trim_deg:+.2f}° @ {trim_pct:.1f}%")
-                    while True:
-                        h2 = imu.get_heading(fresh_within=0.5, blocking=False) or imu.get_heading_cached()
-                        if h2 is None:
-                            break
-                        terr = ((trim_target - h2 + 180.0) % 360.0) - 180.0
-                        if abs(terr) <= trim_tol:
-                            break
-                        sign2 = 1.0 if terr > 0 else -1.0
-                        bot.set_left_motor_speed(_clamp_pct(-sign2 * trim_pct))
-                        bot.set_right_motor_speed(_clamp_pct(+sign2 * trim_pct))
-                        if time.time() > trim_deadline:
-                            break
-                        time.sleep(0.02)
-                    bot.stop_motors()
-                    final_h2 = imu.get_heading(fresh_within=1.0, blocking=False) or imu.get_heading_cached()
-                    if final_h2 is not None:
-                        final_err2 = ((target_deg - final_h2 + 180.0) % 360.0) - 180.0
-                        print(f"{label}: IMU back-trim done, residual err={final_err2:+.2f}° -> {final_h2:.2f}°")
-                    else:
-                        print(f"{label}: IMU back-trim done; final heading unknown")
-
-                return
-
-        # If we reach here, IMU not available or gave no reading: fall back to encoders
-    except Exception as e:
-        # Don't fail the run; fall back to encoder-based spin
-        print(f"{label}: IMU control unavailable ({e}), falling back to encoder-only spin")
+    # We prefer encoder-based turns as primary motion; IMU will be used only
+    # after the encoder spin to verify and optionally perform a small trim.
 
     # --- Encoder-only fallback (original behavior) ---
     # Apply under-turn trim only for encoder-only mode
@@ -400,7 +431,9 @@ def p4_to_p5(bot):
 
         # 1) +45° CCW pre-turn (encoder-based spin)
         print("\nP4→P5 pre-turn: +45° CCW")
-        turn_in_place_by_angle(bot, dtheta_rad=math.pi/4, pct=PCT_TURN, label="P4→P5 pre-turn")
+        # turn_in_place_by_angle(bot, dtheta_rad=math.pi/4, pct=PCT_TURN, label="P4→P5 pre-turn")
+        turn_in_place_by_angle_imu(bot, dtheta_rad=math.pi/4, label="P4→P5 pre-turn (IMU)")
+
 
         # brief settle
         bot.stop_motors(); time.sleep(0.12)
@@ -434,10 +467,12 @@ def p5_to_p6(bot):
     x2, y2, th2 = WPTS[6]   # P6
 
     # # --- Step 1: Heading change ---
-    # dtheta = th2 - th1
-    # dtheta = ((dtheta + math.pi) % (2*math.pi)) - math.pi  # normalize to [-π, π]
-    # print(f"\nP5→P6 turn: Δθ={math.degrees(dtheta):+.1f}°")
-    turn_in_place_by_angle(bot, math.radians(45.0), pct=PCT_TURN, label="pre-turn 45° (-2%)")
+    dtheta = th2 - th1
+    dtheta = ((dtheta + math.pi) % (2*math.pi)) - math.pi  # normalize to [-π, π]
+    print(f"\nP5→P6 turn: Δθ={math.degrees(dtheta):+.1f}°")
+    # turn_in_place_by_angle(bot, math.radians(45.0), pct=PCT_TURN, label="pre-turn 45° (-2%)")
+    turn_to_absolute_heading_imu(bot, target_heading_rad=0.0, label="P5→P6 face east (IMU)")
+
 
     # turn_in_place_by_angle(bot, dtheta_rad=dtheta, pct=PCT_TURN, label="P5→P6 turn")
 
@@ -464,7 +499,9 @@ def p6_to_p7(bot):
     dtheta = th2 - th1
     dtheta = ((dtheta + math.pi) % (2*math.pi)) - math.pi  # normalize
     print(f"\nP6→P7 turn: Δθ={math.degrees(dtheta):+.1f}°")
-    turn_in_place_by_angle(bot, dtheta_rad=dtheta, pct=PCT_TURN, label="P6→P7 turn")
+    # turn_in_place_by_angle(bot, dtheta_rad=dtheta, pct=PCT_TURN, label="P6→P7 turn")
+    turn_to_absolute_heading_imu(bot, target_heading_rad=dtheta, label="P6→P7 turn (IMU)")
+
 
     bot.stop_motors(); time.sleep(0.12)
 
