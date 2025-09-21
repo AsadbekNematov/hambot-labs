@@ -7,7 +7,7 @@ R_WHEEL_M    = 0.045    # wheel radius [m]
 AXLE_LEN_M   = 0.184    # wheel spacing [m]
 PCT_STRAIGHT = 30.0     # base power for straight (%)
 PCT_ARC      = 30.0     # base power for arcs (%)
-PCT_TURN     = 10.0     # base power for in-place turns (%)
+PCT_TURN     = 6.5     # base power for in-place turns (%)
 FT2M         = 0.3048
 
 # Encoders: your hardware reports radians (from your quick check)
@@ -141,9 +141,23 @@ def turn_in_place_by_angle(bot, dtheta_rad, pct=PCT_TURN, label="spin", shrink_p
                 min_drive = max(6.0, abs(pct) * 0.12)  # minimum % to overcome stiction
                 max_drive = abs(pct)
 
-                # timeout scales with requested angle magnitude
-                timeout_s = max(2.0, abs(math.degrees(dtheta)) * 0.04 + 0.8)
-                deadline = time.time() + timeout_s
+                # timeout scales with requested angle magnitude; permit progress-based extensions
+                base_timeout_s = max(2.0, abs(math.degrees(dtheta)) * 0.04 + 0.8)
+                overall_deadline = time.time() + max(base_timeout_s, 3.0)
+                # progress_deadline is the short window we expect continued progress in
+                progress_deadline = time.time() + base_timeout_s
+
+                # Two-stage gains: aggressive when far, gentler when near
+                high_Kp = max(0.9, Kp * 1.4)
+                low_Kp = max(0.35, Kp * 0.6)
+                stage_switch_deg = 15.0  # degrees: switch to fine control inside this
+
+                # Crawl and final-trim settings
+                crawl_deg_threshold = 12.0   # within this deg, enforce crawl
+                min_crawl_pct = max(4.0, abs(pct) * 0.12)
+                success_tol_deg = 1.0
+
+                last_err_abs = None
 
                 while True:
                     h = imu.get_heading(fresh_within=0.5, blocking=False)
@@ -158,30 +172,81 @@ def turn_in_place_by_angle(bot, dtheta_rad, pct=PCT_TURN, label="spin", shrink_p
                     err_abs = abs(err)
 
                     # success condition
-                    if err_abs <= 1.0:
+                    if err_abs <= success_tol_deg:
                         break
 
+                    # choose gain based on magnitude
+                    gain = high_Kp if err_abs > stage_switch_deg else low_Kp
+
                     # compute drive magnitude from error
-                    drive = min(max_drive, max(min_drive, abs(Kp * err)))
+                    drive = gain * err_abs
+                    # enforce minimum crawl when near the end to prevent stalling
+                    if err_abs <= crawl_deg_threshold:
+                        drive = max(drive, min_crawl_pct)
+                    # saturate
+                    drive = min(max_drive, max(min_drive, drive))
+
                     sign = 1.0 if err > 0 else -1.0  # + => need CCW
 
                     # apply to motors: CCW => left back (negative), right forward (positive)
                     bot.set_left_motor_speed(_clamp_pct(-sign * drive))
                     bot.set_right_motor_speed(_clamp_pct(+sign * drive))
 
-                    if time.time() > deadline:
-                        print(f"{label}: IMU control timeout (err={err:.2f}°).")
+                    # progress detection: if error decreases, extend the progress_deadline
+                    if last_err_abs is None or err_abs < last_err_abs - 0.5:
+                        progress_deadline = time.time() + max(0.8, base_timeout_s * 0.5)
+                    last_err_abs = err_abs
+
+                    now = time.time()
+                    # expire when both overall_deadline passed or progress_deadline passed
+                    if now > overall_deadline and now > progress_deadline:
+                        print(f"{label}: IMU control timeout (err={err:.2f}°). last_err={err_abs:.2f}°")
                         break
+
                     time.sleep(0.02)
 
                 bot.stop_motors()
+
                 # report measured final heading if available
                 final_h = imu.get_heading(fresh_within=1.0, blocking=False) or imu.get_heading_cached()
+                final_err = None
                 if final_h is not None:
+                    final_err = ((target_deg - final_h + 180.0) % 360.0) - 180.0
                     achieved = ((final_h - cur + 180.0) % 360.0) - 180.0
-                    print(f"{label}: done (achieved Δ={achieved:+.2f}° -> {final_h:.2f}°)")
+                    print(f"{label}: IMU pass done (achieved Δ={achieved:+.2f}° -> {final_h:.2f}°), residual err={final_err:+.2f}°")
                 else:
-                    print(f"{label}: done (IMU used; final heading unknown)")
+                    print(f"{label}: IMU pass done (IMU used; final heading unknown)")
+
+                # If residual error is still significant, do a tiny IMU-based back-trim
+                if final_err is not None and abs(final_err) > 3.0:
+                    trim_deg = final_err
+                    # perform a short, lower-power trim with tight tolerance
+                    trim_target = (final_h + trim_deg) % 360.0
+                    trim_deadline = time.time() + max(1.0, abs(trim_deg) * 0.05 + 0.5)
+                    trim_tol = 0.8
+                    trim_pct = max(4.0, abs(pct) * 0.5)
+                    print(f"{label}: performing IMU back-trim Δ={trim_deg:+.2f}° @ {trim_pct:.1f}%")
+                    while True:
+                        h2 = imu.get_heading(fresh_within=0.5, blocking=False) or imu.get_heading_cached()
+                        if h2 is None:
+                            break
+                        terr = ((trim_target - h2 + 180.0) % 360.0) - 180.0
+                        if abs(terr) <= trim_tol:
+                            break
+                        sign2 = 1.0 if terr > 0 else -1.0
+                        bot.set_left_motor_speed(_clamp_pct(-sign2 * trim_pct))
+                        bot.set_right_motor_speed(_clamp_pct(+sign2 * trim_pct))
+                        if time.time() > trim_deadline:
+                            break
+                        time.sleep(0.02)
+                    bot.stop_motors()
+                    final_h2 = imu.get_heading(fresh_within=1.0, blocking=False) or imu.get_heading_cached()
+                    if final_h2 is not None:
+                        final_err2 = ((target_deg - final_h2 + 180.0) % 360.0) - 180.0
+                        print(f"{label}: IMU back-trim done, residual err={final_err2:+.2f}° -> {final_h2:.2f}°")
+                    else:
+                        print(f"{label}: IMU back-trim done; final heading unknown")
+
                 return
 
         # If we reach here, IMU not available or gave no reading: fall back to encoders
