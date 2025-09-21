@@ -322,33 +322,46 @@ def turn_in_place_by_angle(bot, dtheta_rad, pct=PCT_TURN, label="spin", shrink_p
 
 def drive_arc_by_wheel_dists(bot, sL_m, sR_m, base_pct=PCT_ARC, label="arc"):
     """
-    Encoder-only arc: command wheels with proportional speeds so they finish together.
+    Drive an arc by commanding per-wheel distances and finishing both together.
+    Uses per-wheel taper near the end so the shorter (inner) path doesn't overshoot.
     """
+    # Signs and magnitudes
     signL = 1.0 if sL_m >= 0 else -1.0
     signR = 1.0 if sR_m >= 0 else -1.0
     aL, aR = abs(sL_m), abs(sR_m)
     if aL < 1e-6 and aR < 1e-6:
-        print(f"{label}: degenerate, skip"); return
+        print(f"{label}: degenerate, skip"); 
+        return
 
+    # Scale motor % so both wheels complete together
     smax = max(aL, aR)
     pctL = _clamp_pct(base_pct * (aL / smax)) * signL
     pctR = _clamp_pct(base_pct * (aR / smax)) * signR
 
     l0, r0 = bot.get_encoder_readings()
     print(f"{label}: targets L={sL_m:.4f} m, R={sR_m:.4f} m | power L={pctL:.1f}%, R={pctR:.1f}%")
+
     bot.set_left_motor_speed(pctL)
     bot.set_right_motor_speed(pctR)
 
-    # end ramp in last 0.10 m
+    # Per-wheel taper window: 3 cm or ~35% of the shorter path
+    r_end = max(0.03, 0.35 * min(aL, aR))
+
     while True:
         sL, sR = enc_wheel_progress_m(bot, l0, r0)
-        remL = aL - abs(sL)
-        remR = aR - abs(sR)
-        rem_min = max(0.0, min(remL, remR))
-        scale = 1.0 if rem_min > 0.10 else max(0.30, rem_min / 0.10)
+        remL = max(0.0, aL - abs(sL))
+        remR = max(0.0, aR - abs(sR))
 
-        bot.set_left_motor_speed( _clamp_pct(pctL * scale) )
-        bot.set_right_motor_speed(_clamp_pct(pctR * scale) )
+        # Per-wheel scaling (prevents inner wheel from being over-driven)
+        scaleL = 1.0 if remL > r_end else max(0.30, remL / r_end)
+        scaleR = 1.0 if remR > r_end else max(0.30, remR / r_end)
+
+        # Stop a wheel that's effectively done; keep tapering the other
+        cmdL = 0.0 if remL <= 1e-3 else _clamp_pct(pctL * scaleL)
+        cmdR = 0.0 if remR <= 1e-3 else _clamp_pct(pctR * scaleR)
+
+        bot.set_left_motor_speed(cmdL)
+        bot.set_right_motor_speed(cmdR)
 
         if (abs(sL) >= aL - 1e-3) and (abs(sR) >= aR - 1e-3):
             break
@@ -458,32 +471,35 @@ def p4_to_p5(bot):
         #             turn_in_place_by_angle(bot, math.radians(ddeg), pct=PCT_TURN*0.6, label="P4→P5 IMU trim")
         # except Exception:
         #     pass
-def p5_to_p6(bot):
+def p5_to_p6(bot, margin_pct: float = 0.02):
     """
-    Encoder-only P5→P6:
-      Turn to match target heading, then straight distance from WPTS.
+    P5→P6:
+      1) IMU pre-turn (relative +45° by default)
+      2) Straight with a small safety margin (default 2% shorter)
     """
     x1, y1, th1 = WPTS[5]   # P5
     x2, y2, th2 = WPTS[6]   # P6
 
-    # # --- Step 1: Heading change ---
-    dtheta = th2 - th1
-    dtheta = ((dtheta + math.pi) % (2*math.pi)) - math.pi  # normalize to [-π, π]
-    print(f"\nP5→P6 turn: Δθ={math.degrees(dtheta):+.1f}°")
-    # turn_in_place_by_angle(bot, math.radians(45.0), pct=PCT_TURN, label="pre-turn 45° (-2%)")
-    turn_in_place_by_angle_imu(bot, dtheta_rad=math.radians(45.0), label="P5→P6 pre-turn (IMU)")
-
-    # turn_in_place_by_angle(bot, dtheta_rad=dtheta, pct=PCT_TURN, label="P5→P6 turn")
-
+    # --- Step 1: Heading change (IMU, relative +45°) ---
+    print(f"\nP5→P6 turn: target +45° (relative)")
+    turn_in_place_by_angle_imu(
+        bot,
+        dtheta_rad=math.radians(45.0),
+        # slightly gentler settle so it doesn't false-timeout
+        fast_pct=16.0, slow_pct=5.0, kp_pct_per_deg=1.8,
+        settle_deg=1.2, settle_time_s=0.25, timeout_s=8.0,
+        label="P5→P6 pre-turn (IMU)"
+    )
     bot.stop_motors(); time.sleep(0.12)
 
-    # --- Step 2: Straight distance ---
-    d_ft = math.hypot(x2 - x1, y2 - y1)
-    print(f"P5→P6 straight: {d_ft:.4f} ft")
-    drive_straight_feet(bot, d_ft, pct=PCT_STRAIGHT, label="P5→P6 straight")
+    # --- Step 2: Straight distance with margin ---
+    d_ft_nominal = math.hypot(x2 - x1, y2 - y1)
+    d_ft = d_ft_nominal * (1.0 - float(margin_pct))   # 2% shorter by default
+    print(f"P5→P6 straight: {d_ft:.4f} ft (nominal {d_ft_nominal:.4f} ft, margin {margin_pct*100:.1f}%)")
+    drive_straight_feet(bot, d_ft, pct=PCT_STRAIGHT, label="P5→P6 straight (with margin)")
 
     bot.stop_motors()
-    print(f"P5→P6: done; now at {WPTS[6]}")
+    print(f"P5→P6: done; now at ~{WPTS[6]} (straight reduced by {margin_pct*100:.1f}%)")
 
 
 def p6_to_p7(bot):
@@ -646,17 +662,12 @@ def p11_to_p12(bot):
     x1, y1, th1 = WPTS[11]   # P11 = (-1.0, 2.0, 0)
     x2, y2, th2 = WPTS[12]   # P12 = ( 1.5, 2.0, 0)
 
-    # --- NEW: Pre-turn (absolute) to ensure perfect east before straight ---
-    print("\nP11→P12 pre-turn: target heading = 0° (east)")
-    turn_to_absolute_heading_imu(
-        bot,
-        target_heading_rad=th2,         
-        fast_pct=14.0, slow_pct=4.0,  
-        kp_pct_per_deg=1.6,
-        min_overcome_pct=5.0,
-        settle_deg=0.8, settle_time_s=0.25, timeout_s=8.0,
-        label="P11→P12 pre-turn (IMU absolute)"
-    )
+    # Turn needed (should be ~0, but keep logic generic)
+    dtheta = ((th2 - th1 + math.pi) % (2*math.pi)) - math.pi
+    if abs(dtheta) > 1e-3:
+        print(f"\nP11→P12 trim turn: Δθ={math.degrees(dtheta):+.1f}°")
+        turn_in_place_by_angle_imu(bot, dtheta_rad=dtheta, label="P11-P12 turn (IMU)")
+
     bot.stop_motors(); time.sleep(0.12)
 
     # Straight distance from waypoints
