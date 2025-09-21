@@ -646,13 +646,18 @@ def p11_to_p12(bot):
     x1, y1, th1 = WPTS[11]   # P11 = (-1.0, 2.0, 0)
     x2, y2, th2 = WPTS[12]   # P12 = ( 1.5, 2.0, 0)
 
-    # Turn needed (should be ~0, but keep logic generic)
-    dtheta = ((th2 - th1 + math.pi) % (2*math.pi)) - math.pi
-    if abs(dtheta) > 1e-3:
-        print(f"\nP11→P12 trim turn: Δθ={math.degrees(dtheta):+.1f}°")
-        turn_in_place_by_angle_imu(bot, dtheta_rad=dtheta, label="P11-P12 turn (IMU)")
-
-        bot.stop_motors(); time.sleep(0.12)
+    # --- NEW: Pre-turn (absolute) to ensure perfect east before straight ---
+    print("\nP11→P12 pre-turn: target heading = 0° (east)")
+    turn_to_absolute_heading_imu(
+        bot,
+        target_heading_rad=th2,         
+        fast_pct=14.0, slow_pct=4.0,  
+        kp_pct_per_deg=1.6,
+        min_overcome_pct=5.0,
+        settle_deg=0.8, settle_time_s=0.25, timeout_s=8.0,
+        label="P11→P12 pre-turn (IMU absolute)"
+    )
+    bot.stop_motors(); time.sleep(0.12)
 
     # Straight distance from waypoints
     d_ft = math.hypot(x2 - x1, y2 - y1)  # should be 2.5 ft
@@ -661,6 +666,39 @@ def p11_to_p12(bot):
 
     bot.stop_motors()
     print(f"P11→P12: done; now at {WPTS[12]}")
+
+def p12_to_p13(bot):
+    """
+    Final segment P12→P13 (constant-velocity arc for T=0.5 s):
+      VR = 0.24 m/s, VL = 0.80 m/s
+    We compute R, ICC side, ω, D, θ, then execute the arc by distance.
+    """
+    VR = 0.24  # m/s
+    VL = 0.80  # m/s
+    T  = 0.5   # s
+    L  = AXLE_LEN_M
+
+    # Kinematics
+    v = 0.5 * (VR + VL)         # robot center linear speed
+    omega = (VR - VL) / L       # rad/s  (sign: +CCW, -CW)
+    R = v / omega if abs(omega) > 1e-9 else float('inf')  # m
+    theta = omega * T           # radians traveled by robot
+    D = v * T                   # center arc length
+
+    # Wheel path lengths to finish in time T
+    sL = VL * T                 # meters
+    sR = VR * T                 # meters
+
+    # Report
+    side = "left" if R > 0 else "right"
+    print("\nP12→P13 arc (spec speeds):")
+    print(f"  v = {v:.3f} m/s, ω = {omega:.5f} rad/s")
+    print(f"  R = {abs(R):.4f} m to the {side} (ICC)")
+    print(f"  θ = {math.degrees(theta):+.2f}° ({theta:+.5f} rad),  D = {D:.3f} m")
+    print(f"  Wheel distances over T={T:.2f}s: sL={sL:.3f} m, sR={sR:.3f} m")
+
+    # Execute arc by distances (keeps the ratio so both wheels finish together)
+    drive_arc_by_wheel_dists(bot, sL_m=sL, sR_m=sR, base_pct=PCT_ARC, label="P12→P13 arc")
 
 # ----------------- Main -----------------
 def main():
@@ -701,6 +739,8 @@ def main():
 
         print("\n=== P11 → P12 (straight) ===")
         p11_to_p12(bot)
+        print("\n=== P12 → P13 (arc by given VR,VL,T) ===")
+        p12_to_p13(bot)
 
         print("\nDone.")
     finally:
