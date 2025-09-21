@@ -115,16 +115,89 @@ def turn_in_place_by_angle(bot, dtheta_rad, pct=PCT_TURN, label="spin", shrink_p
     # --- normalize requested angle ---
     dtheta = ((dtheta_rad + math.pi) % (2*math.pi)) - math.pi
 
-    # --- apply under-turn trim (keeps sign) ---
-    if shrink_pct != 0.0:
-        dtheta = math.copysign(abs(dtheta) * max(0.0, 1.0 - float(shrink_pct)), dtheta)
+    # Note: do not apply `shrink_pct` here when IMU is available.
+    # The `shrink_pct` under-turn trim will be applied only in the
+    # encoder-only fallback further below.
 
     if abs(dtheta) < math.radians(1.0):
         print(f"{label}: skip (|Δθ| < 1°)")
         return
 
-    sR_target =  (AXLE_LEN_M/2.0) * dtheta
-    sL_target = -(AXLE_LEN_M/2.0) * dtheta
+    # Try IMU-based closed-loop heading control when available on `bot`.
+    try:
+        imu = getattr(bot, "imu", None)
+        if imu is not None:
+            # Read a reasonably fresh heading (degrees from East)
+            cur = imu.get_heading(fresh_within=1.0, blocking=True, wait_timeout=0.8)
+            if cur is None:
+                cur = imu.get_heading_cached()
+
+            if cur is not None:
+                target_deg = (cur + math.degrees(dtheta)) % 360.0
+                print(f"{label}: IMU-controlled turn Δθ={math.degrees(dtheta):+.2f}°, target={target_deg:.2f}° (from {cur:.2f}°)")
+
+                # Controller gains & limits
+                Kp = 0.8   # % output per degree of heading error (tunable)
+                min_drive = max(6.0, abs(pct) * 0.12)  # minimum % to overcome stiction
+                max_drive = abs(pct)
+
+                # timeout scales with requested angle magnitude
+                timeout_s = max(2.0, abs(math.degrees(dtheta)) * 0.04 + 0.8)
+                deadline = time.time() + timeout_s
+
+                while True:
+                    h = imu.get_heading(fresh_within=0.5, blocking=False)
+                    if h is None:
+                        h = imu.get_heading_cached()
+                    if h is None:
+                        # no IMU sample available, abort to encoder fallback
+                        raise RuntimeError("IMU returned no heading samples")
+
+                    # smallest signed error in degrees (-180, 180]
+                    err = ((target_deg - h + 180.0) % 360.0) - 180.0
+                    err_abs = abs(err)
+
+                    # success condition
+                    if err_abs <= 1.0:
+                        break
+
+                    # compute drive magnitude from error
+                    drive = min(max_drive, max(min_drive, abs(Kp * err)))
+                    sign = 1.0 if err > 0 else -1.0  # + => need CCW
+
+                    # apply to motors: CCW => left back (negative), right forward (positive)
+                    bot.set_left_motor_speed(_clamp_pct(-sign * drive))
+                    bot.set_right_motor_speed(_clamp_pct(+sign * drive))
+
+                    if time.time() > deadline:
+                        print(f"{label}: IMU control timeout (err={err:.2f}°).")
+                        break
+                    time.sleep(0.02)
+
+                bot.stop_motors()
+                # report measured final heading if available
+                final_h = imu.get_heading(fresh_within=1.0, blocking=False) or imu.get_heading_cached()
+                if final_h is not None:
+                    achieved = ((final_h - cur + 180.0) % 360.0) - 180.0
+                    print(f"{label}: done (achieved Δ={achieved:+.2f}° -> {final_h:.2f}°)")
+                else:
+                    print(f"{label}: done (IMU used; final heading unknown)")
+                return
+
+        # If we reach here, IMU not available or gave no reading: fall back to encoders
+    except Exception as e:
+        # Don't fail the run; fall back to encoder-based spin
+        print(f"{label}: IMU control unavailable ({e}), falling back to encoder-only spin")
+
+    # --- Encoder-only fallback (original behavior) ---
+    # Apply under-turn trim only for encoder-only mode
+    if shrink_pct != 0.0:
+        dtheta_enc = math.copysign(abs(dtheta) * max(0.0, 1.0 - float(shrink_pct)), dtheta)
+    else:
+        dtheta_enc = dtheta
+
+    sR_target =  (AXLE_LEN_M/2.0) * dtheta_enc
+    sL_target = -(AXLE_LEN_M/2.0) * dtheta_enc
     dir = 1.0 if dtheta > 0 else -1.0  # +CCW: left back, right fwd
 
     print(f"{label}: target Δθ={math.degrees(dtheta):+.2f}°, sL={sL_target:+.4f} m, sR={sR_target:+.4f} m")
@@ -299,7 +372,7 @@ def p5_to_p6(bot):
     # dtheta = th2 - th1
     # dtheta = ((dtheta + math.pi) % (2*math.pi)) - math.pi  # normalize to [-π, π]
     # print(f"\nP5→P6 turn: Δθ={math.degrees(dtheta):+.1f}°")
-    turn_in_place_by_angle(bot, math.radians(45.0), pct=PCT_TURN, shrink_pct=0.5, label="pre-turn 45° (-2%)")
+    turn_in_place_by_angle(bot, math.radians(45.0), pct=PCT_TURN, label="pre-turn 45° (-2%)")
 
     # turn_in_place_by_angle(bot, dtheta_rad=dtheta, pct=PCT_TURN, label="P5→P6 turn")
 
@@ -326,7 +399,7 @@ def p6_to_p7(bot):
     dtheta = th2 - th1
     dtheta = ((dtheta + math.pi) % (2*math.pi)) - math.pi  # normalize
     print(f"\nP6→P7 turn: Δθ={math.degrees(dtheta):+.1f}°")
-    turn_in_place_by_angle(bot, dtheta_rad=dtheta, pct=PCT_TURN, shrink_pct=0.1, label="P6→P7 turn")
+    turn_in_place_by_angle(bot, dtheta_rad=dtheta, pct=PCT_TURN, label="P6→P7 turn")
 
     bot.stop_motors(); time.sleep(0.12)
 
@@ -350,7 +423,7 @@ def p7_to_p8(bot):
     dtheta = th2 - th1
     dtheta = ((dtheta + math.pi) % (2*math.pi)) - math.pi  # normalize to [-π,π]
     print(f"\nP7→P8 turn: Δθ={math.degrees(dtheta):+.1f}°")
-    turn_in_place_by_angle(bot, dtheta_rad=dtheta, pct=PCT_TURN, shrink_pct=0.1, label="P7→P8 turn")
+    turn_in_place_by_angle(bot, dtheta_rad=dtheta, pct=PCT_TURN, label="P7→P8 turn")
 
     bot.stop_motors(); time.sleep(0.12)
 
@@ -373,7 +446,7 @@ def p8_to_p9(bot):
     dtheta = th2 - th1
     dtheta = ((dtheta + math.pi) % (2*math.pi)) - math.pi
     print(f"\nP8→P9 turn: Δθ={math.degrees(dtheta):+.1f}°")
-    turn_in_place_by_angle(bot, dtheta_rad=dtheta, pct=PCT_TURN, shrink_pct=0.1, label="P8→P9 turn")
+    turn_in_place_by_angle(bot, dtheta_rad=dtheta, pct=PCT_TURN, label="P8→P9 turn")
 
     bot.stop_motors(); time.sleep(0.12)
 
@@ -398,7 +471,7 @@ def p9_to_p10(bot):
     dtheta = th2 - th1
     dtheta = ((dtheta + math.pi) % (2*math.pi)) - math.pi
     print(f"\nP9→P10 turn: Δθ={math.degrees(dtheta):+.1f}°")
-    turn_in_place_by_angle(bot, dtheta_rad=dtheta, pct=PCT_TURN, shrink_pct=0.1, label="P9→P10 turn")
+    turn_in_place_by_angle(bot, dtheta_rad=dtheta, pct=PCT_TURN, label="P9→P10 turn")
 
     bot.stop_motors(); time.sleep(0.12)
 
@@ -425,7 +498,7 @@ def p10_to_p11(bot):
     th_mid = math.pi / 2  # north
     dtheta1 = ((th_mid - th1 + math.pi) % (2*math.pi)) - math.pi
     print(f"\nP10→P11 pre-turn: Δθ₁={math.degrees(dtheta1):+.1f}° to face north")
-    turn_in_place_by_angle(bot, dtheta_rad=dtheta1, pct=PCT_TURN, shrink_pct=0.1, label="P10→P11 pre-turn")
+    turn_in_place_by_angle(bot, dtheta_rad=dtheta1, pct=PCT_TURN, label="P10→P11 pre-turn")
     bot.stop_motors(); time.sleep(0.12)
 
     # ---------- Step 2: Quarter-circle RIGHT arc ----------
