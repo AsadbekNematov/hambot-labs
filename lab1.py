@@ -7,9 +7,9 @@ from src.robot_systems.imu import IMU
 # ----------------- Robot constants -----------------
 R_WHEEL_M    = 0.045    # wheel radius [m]
 AXLE_LEN_M   = 0.184    # wheel spacing [m]
-PCT_STRAIGHT = 40.0     # base power for straight (%)
-PCT_ARC      = 30.0     # base power for arcs (%)
-PCT_TURN     = 6.5     # base power for in-place turns (%)
+PCT_STRAIGHT = 50.0     # base power for straight (%)
+PCT_ARC      = 40.0     # base power for arcs (%)
+PCT_TURN     = 10.0     # base power for in-place turns (%)
 FT2M         = 0.3048
 
 # Encoders: your hardware reports radians (from your quick check)
@@ -704,29 +704,29 @@ def p12_to_p13(bot):
 def main():
     bot = HamBot(lidar_enabled=False, camera_enabled=False)
     try:
-        # print("\n=== P0 → P1 (straight) ===")
-        # p0_to_p1(bot)
+        print("\n=== P0 → P1 (straight) ===")
+        p0_to_p1(bot)
 
-        # print("\n=== P1 → P2 (quarter right arc) ===")
-        # p1_to_p2_arc(bot)
+        print("\n=== P1 → P2 (quarter right arc) ===")
+        p1_to_p2_arc(bot)
 
-        # print("\n=== P2 → P3 (straight 1.0 ft up) ===")
-        # p2_to_p3(bot)
+        print("\n=== P2 → P3 (straight 1.0 ft up) ===")
+        p2_to_p3(bot)
 
-        # print("\n=== P3 → P4 (half-circle right arc) ===")
-        # p3_to_p4_arc(bot)
+        print("\n=== P3 → P4 (half-circle right arc) ===")
+        p3_to_p4_arc(bot)
 
-        # print("\n=== P4 → P5 (turn, straight, turn) ===")
-        # p4_to_p5(bot)
+        print("\n=== P4 → P5 (turn, straight, turn) ===")
+        p4_to_p5(bot)
 
-        # print("\n=== P5 → P6 (turn, straight) ===")
-        # p5_to_p6(bot)
+        print("\n=== P5 → P6 (turn, straight) ===")
+        p5_to_p6(bot)
 
-        # print("\n=== P6 → P7 (turn, straight) ===")
-        # p6_to_p7(bot)
+        print("\n=== P6 → P7 (turn, straight) ===")
+        p6_to_p7(bot)
 
-        # print("\n=== P7 → P8 (turn, straight) ===")
-        # p7_to_p8(bot)
+        print("\n=== P7 → P8 (turn, straight) ===")
+        p7_to_p8(bot)
 
         print("\n=== P8 → P9 (turn, straight) ===")
         p8_to_p9(bot)
