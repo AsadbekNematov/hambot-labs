@@ -12,7 +12,7 @@ PCT_ARC      = 40.0     # base power for arcs (%)
 PCT_TURN     = 10.0     # base power for in-place turns (%)
 FT2M         = 0.3048
 
-# Encoders: your hardware reports radians (from your quick check)
+# Encoder configuration; set ENC_DEGREES=True when hardware outputs degrees.
 ENC_DEGREES  = False
 ENC_SIGN_L   = +1.0
 ENC_SIGN_R   = +1.0
@@ -24,7 +24,7 @@ def _norm_deg_0_360(a_deg: float) -> float:
 
 def _norm_deg_m180_180(a_deg: float) -> float:
     a = (a_deg + 180.0) % 360.0 - 180.0
-    # map -180 exactly to +180 for a unique rep (optional)
+    # Map -180° to +180° so headings have a single representation.
     return 180.0 if abs(a + 180.0) < 1e-9 else a
 
 def _shortest_err_deg(target_deg: float, cur_deg: float) -> float:
@@ -86,25 +86,6 @@ def turn_in_place_by_angle_imu(bot,
                          min_overcome_pct, settle_deg, settle_time_s,
                          timeout_s, label=label)
 
-def turn_to_absolute_heading_imu(bot,
-                                 target_heading_rad: float,
-                                 fast_pct: float = 18.0,
-                                 slow_pct: float = 8.0,
-                                 kp_pct_per_deg: float = 1.8,
-                                 min_overcome_pct: float = 6.0,
-                                 settle_deg: float = 1.0,
-                                 settle_time_s: float = 0.20,
-                                 timeout_s: float = 6.0,
-                                 label: str = "IMU spin (absolute)"):
-    """
-    Turn in place until absolute heading (radians-from-East) is reached.
-    """
-    _ensure_imu_on(bot)
-    target_deg = _norm_deg_0_360(math.degrees(target_heading_rad))
-    _turn_to_heading_imu(bot, target_deg, fast_pct, slow_pct, kp_pct_per_deg,
-                         min_overcome_pct, settle_deg, settle_time_s,
-                         timeout_s, label=label)
-
 def _turn_to_heading_imu(bot,
                          target_deg: float,
                          fast_pct: float,
@@ -122,13 +103,13 @@ def _turn_to_heading_imu(bot,
     t0 = time.time()
     settle_start = None
 
-    # Use a shorter dt for smoother control
+    # Short control period keeps feedback responsive.
     dt = 0.01
     try:
         while True:
             cur = imu_get_heading_deg(bot, fresh_within=0.25, blocking=True, wait_timeout=0.3)
             if cur is None:
-                # If temporarily missing, don't jerk motors; just continue
+                # Hold still while waiting for the next heading sample.
                 bot.set_left_motor_speed(0); bot.set_right_motor_speed(0)
                 time.sleep(dt)
                 if time.time() - t0 > timeout_s:
@@ -139,22 +120,22 @@ def _turn_to_heading_imu(bot,
             err = _shortest_err_deg(target_deg, cur)  # signed in [-180,180]
             aerr = abs(err)
 
-            # Proportional term -> raw % command
+            # Proportional controller converts heading error to motor power.
             cmd = kp_pct_per_deg * err
 
-            # Taper max output near target
+            # Reduce allowable output when the heading error is small.
             cap = slow_pct if aerr < 8.0 else fast_pct
             cmd = max(-cap, min(cap, cmd))
 
-            # Ensure we overcome stiction but don't exceed caps
+            # Guarantee a minimum effort whenever error exceeds the settle band.
             if abs(cmd) < min_overcome_pct and aerr > settle_deg:
                 cmd = math.copysign(min_overcome_pct, cmd if cmd != 0 else err)
 
-            # Left motor negative, Right motor positive yields CCW (based on your earlier convention)
+            # Differential drive: opposite wheel commands rotate the robot in place.
             bot.set_left_motor_speed( _clamp_pct(-cmd) )
             bot.set_right_motor_speed(_clamp_pct(+cmd) )
 
-            # Settle logic: hold inside a small window for a short time
+            # Declare success only after holding within the settle band long enough.
             if aerr <= settle_deg:
                 if settle_start is None:
                     settle_start = time.time()
@@ -170,7 +151,7 @@ def _turn_to_heading_imu(bot,
             time.sleep(dt)
     finally:
         bot.stop_motors()
-        # Brief brake time to kill coast
+        # Quick pause to bleed off residual motion.
         time.sleep(0.05)
         bot.stop_motors()
         cur = imu_get_heading_deg(bot, blocking=False) or float('nan')
@@ -204,11 +185,6 @@ def enc_wheel_deltas_rad(bot, l0, r0):
         dl = math.radians(dl); dr = math.radians(dr)
     return dl, dr
 
-def enc_distance_center_m(bot, l0, r0):
-    """Average of wheel distances (meters)."""
-    dl, dr = enc_wheel_deltas_rad(bot, l0, r0)
-    return R_WHEEL_M * 0.5 * (dl + dr)
-
 def enc_wheel_progress_m(bot, l0, r0):
     """Per-wheel distances (meters) since l0,r0."""
     dl, dr = enc_wheel_deltas_rad(bot, l0, r0)
@@ -232,7 +208,7 @@ def drive_straight_feet(bot, dist_ft, pct=PCT_STRAIGHT, label="straight(ft)",
     base = +pct if dist_m >= 0 else -pct
     l0, r0 = bot.get_encoder_readings()
 
-    # no IMU/heading-hold in encoder-only version
+    # Heading correction relies solely on encoder balancing.
 
     while True:
         # progress (per-wheel) and center distance
@@ -241,18 +217,16 @@ def drive_straight_feet(bot, dist_ft, pct=PCT_STRAIGHT, label="straight(ft)",
         progressed = abs(s_center)
         remaining  = max(0.0, abs(dist_m) - progressed)
 
-        # encoder balance (push the slower side a bit)
+        # Encoder balance nudges the slower wheel to reduce drift.
         diff = sR - sL                                     # + if right > left
         turn_pct = max(-8.0, min(8.0, K_bal * diff))
 
-        # (no IMU heading-hold; only encoder balance is used)
-
-        # ----- trapezoid scaling -----
-        # ramp-up based on how far we've gone
+        # Trapezoidal scaling for smooth acceleration and braking.
+        # Ramp up based on distance already covered.
         scale_up = 1.0 if accel_m <= 0 else min(1.0, progressed / accel_m)
-        # ramp-down based on how much is left
+        # Ramp down when the remaining distance is within the decel window.
         scale_dn = 1.0 if decel_m <= 0 else min(1.0, remaining / decel_m)
-        scale = max(min_scale, min(scale_up, scale_dn))    # smooth & bounded
+        scale = max(min_scale, min(scale_up, scale_dn))    # Enforce minimum scale.
 
         bot.set_left_motor_speed(  _clamp_pct((base + turn_pct) * scale) )
         bot.set_right_motor_speed( _clamp_pct((base - turn_pct) * scale) )
@@ -264,68 +238,12 @@ def drive_straight_feet(bot, dist_ft, pct=PCT_STRAIGHT, label="straight(ft)",
     bot.stop_motors()
     print(f"{label}: done (meas ≈ {s_center:.3f} m)")
 
-def turn_in_place_by_angle(bot, dtheta_rad, pct=PCT_TURN, label="spin", shrink_pct=0.0):
-    """
-    Encoder-only in-place spin by dtheta (rad). + = CCW (left), − = CW (right).
-
-    shrink_pct: fractional under-turn (e.g., 0.02 = 2% smaller angle).
-                Useful when the hardware coasts a bit and overshoots.
-    """
-    # --- normalize requested angle ---
-    dtheta = ((dtheta_rad + math.pi) % (2*math.pi)) - math.pi
-
-    # Note: do not apply `shrink_pct` here when IMU is available.
-    # The `shrink_pct` under-turn trim will be applied only in the
-    # encoder-only fallback further below.
-
-    if abs(dtheta) < math.radians(1.0):
-        print(f"{label}: skip (|Δθ| < 1°)")
-        return
-
-    # We prefer encoder-based turns as primary motion; IMU will be used only
-    # after the encoder spin to verify and optionally perform a small trim.
-
-    # --- Encoder-only fallback (original behavior) ---
-    # Apply under-turn trim only for encoder-only mode
-    if shrink_pct != 0.0:
-        dtheta_enc = math.copysign(abs(dtheta) * max(0.0, 1.0 - float(shrink_pct)), dtheta)
-    else:
-        dtheta_enc = dtheta
-
-    sR_target =  (AXLE_LEN_M/2.0) * dtheta_enc
-    sL_target = -(AXLE_LEN_M/2.0) * dtheta_enc
-    dir = 1.0 if dtheta > 0 else -1.0  # +CCW: left back, right fwd
-
-    print(f"{label}: target Δθ={math.degrees(dtheta):+.2f}°, sL={sL_target:+.4f} m, sR={sR_target:+.4f} m")
-
-    l0, r0 = bot.get_encoder_readings()
-    bot.set_left_motor_speed(  _clamp_pct(-dir * abs(pct)) )
-    bot.set_right_motor_speed( _clamp_pct(+dir * abs(pct)) )
-
-    # taper in last 0.02 m on either wheel
-    while True:
-        sL, sR = enc_wheel_progress_m(bot, l0, r0)
-        remL = abs(sL_target) - abs(sL)
-        remR = abs(sR_target) - abs(sR)
-        rem_min = max(0.0, min(remL, remR))
-
-        scale = 1.0 if rem_min > 0.02 else max(0.35, rem_min / 0.02)
-        bot.set_left_motor_speed(  _clamp_pct(-dir * abs(pct) * scale) )
-        bot.set_right_motor_speed( _clamp_pct(+dir * abs(pct) * scale) )
-
-        if (abs(sL) >= abs(sL_target) - 1e-3) and (abs(sR) >= abs(sR_target) - 1e-3):
-            break
-        time.sleep(0.005)
-
-    bot.stop_motors()
-    print(f"{label}: done (L≈{sL:+.4f} m, R≈{sR:+.4f} m)")
-
 def drive_arc_by_wheel_dists(bot, sL_m, sR_m, base_pct=PCT_ARC, label="arc"):
     """
     Drive an arc by commanding per-wheel distances and finishing both together.
     Uses per-wheel taper near the end so the shorter (inner) path doesn't overshoot.
     """
-    # Signs and magnitudes
+    # Determine signed distances for each wheel.
     signL = 1.0 if sL_m >= 0 else -1.0
     signR = 1.0 if sR_m >= 0 else -1.0
     aL, aR = abs(sL_m), abs(sR_m)
@@ -333,7 +251,7 @@ def drive_arc_by_wheel_dists(bot, sL_m, sR_m, base_pct=PCT_ARC, label="arc"):
         print(f"{label}: degenerate, skip"); 
         return
 
-    # Scale motor % so both wheels complete together
+    # Scale motor percentages so both wheels finish simultaneously.
     smax = max(aL, aR)
     pctL = _clamp_pct(base_pct * (aL / smax)) * signL
     pctR = _clamp_pct(base_pct * (aR / smax)) * signR
@@ -344,7 +262,7 @@ def drive_arc_by_wheel_dists(bot, sL_m, sR_m, base_pct=PCT_ARC, label="arc"):
     bot.set_left_motor_speed(pctL)
     bot.set_right_motor_speed(pctR)
 
-    # Per-wheel taper window: 3 cm or ~35% of the shorter path
+    # Taper window is the larger of 3 cm or 35% of the shorter path.
     r_end = max(0.03, 0.35 * min(aL, aR))
 
     while True:
@@ -352,11 +270,11 @@ def drive_arc_by_wheel_dists(bot, sL_m, sR_m, base_pct=PCT_ARC, label="arc"):
         remL = max(0.0, aL - abs(sL))
         remR = max(0.0, aR - abs(sR))
 
-        # Per-wheel scaling (prevents inner wheel from being over-driven)
+        # Scale each wheel independently to avoid overdriving the inner path.
         scaleL = 1.0 if remL > r_end else max(0.30, remL / r_end)
         scaleR = 1.0 if remR > r_end else max(0.30, remR / r_end)
 
-        # Stop a wheel that's effectively done; keep tapering the other
+        # Stop a wheel once it has effectively reached the target distance.
         cmdL = 0.0 if remL <= 1e-3 else _clamp_pct(pctL * scaleL)
         cmdR = 0.0 if remR <= 1e-3 else _clamp_pct(pctR * scaleR)
 
