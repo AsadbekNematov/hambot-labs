@@ -1,10 +1,17 @@
 import sys, os, time, math
+
+
+# ======================================================================
+# Section: Imports and Path Setup
+# ======================================================================
 sys.path.append(os.path.join(os.path.dirname(__file__), "src"))
 from src.robot_systems.robot import HamBot
 from src.robot_systems.imu import IMU
 
 
-# ----------------- Robot constants -----------------
+# ======================================================================
+# Section: Robot Constants and Encoder Configuration
+# ======================================================================
 R_WHEEL_M    = 0.045    # wheel radius [m]
 AXLE_LEN_M   = 0.184    # wheel spacing [m]
 PCT_STRAIGHT = 50.0     # base power for straight (%)
@@ -13,12 +20,18 @@ PCT_TURN     = 10.0     # base power for in-place turns (%)
 FT2M         = 0.3048
 
 # Encoder configuration; set ENC_DEGREES=True when hardware outputs degrees.
-ENC_DEGREES  = False
-ENC_SIGN_L   = +1.0
-ENC_SIGN_R   = +1.0
+ENC_DEGREES = False
+ENC_SIGN_L  = +1.0
+ENC_SIGN_R  = +1.0
 
-def _clamp_pct(x): return max(-100.0, min(100.0, x))
-# ----------------- IMU helpers -----------------
+
+def _clamp_pct(value: float) -> float:
+    return max(-100.0, min(100.0, value))
+
+
+# ======================================================================
+# Section: IMU Helpers and Controllers
+# ======================================================================
 def _norm_deg_0_360(a_deg: float) -> float:
     return a_deg % 360.0
 
@@ -51,7 +64,9 @@ def imu_get_heading_deg(bot, fresh_within=0.3, blocking=True, wait_timeout=0.5):
                             wait_timeout=wait_timeout)
     return None if h is None else float(h)
 
-# ----------------- IMU-closed-loop turn primitives -----------------
+# ======================================================================
+# Section: IMU-Controlled Turn Primitives
+# ======================================================================
 def turn_in_place_by_angle_imu(bot,
                                dtheta_rad: float,
                                fast_pct: float = 18.0,
@@ -110,7 +125,8 @@ def _turn_to_heading_imu(bot,
             cur = imu_get_heading_deg(bot, fresh_within=0.25, blocking=True, wait_timeout=0.3)
             if cur is None:
                 # Hold still while waiting for the next heading sample.
-                bot.set_left_motor_speed(0); bot.set_right_motor_speed(0)
+                bot.set_left_motor_speed(0)
+                bot.set_right_motor_speed(0)
                 time.sleep(dt)
                 if time.time() - t0 > timeout_s:
                     print(f"{label}: timeout (IMU data missing)")
@@ -157,7 +173,9 @@ def _turn_to_heading_imu(bot,
         cur = imu_get_heading_deg(bot, blocking=False) or float('nan')
         print(f"{label}: done, cur≈{cur:.2f}°, err≈{_shortest_err_deg(target_deg, cur):+.2f}°")
 
-# ----------------- Waypoints (feet, radians) -----------------
+# ======================================================================
+# Section: Waypoint Definitions (feet, radians)
+# ======================================================================
 WPTS = [
     (  2.0,  -2.0,  math.pi    ),   # P0
     ( -1.5,  -2.0,  math.pi    ),   # P1
@@ -176,7 +194,9 @@ WPTS = [
 
 
 
-# ----------------- Encoder helpers -----------------
+# ======================================================================
+# Section: Encoder Utility Helpers
+# ======================================================================
 def enc_wheel_deltas_rad(bot, l0, r0):
     l, r = bot.get_encoder_readings()
     dl = ENC_SIGN_L * (l - l0)
@@ -190,7 +210,9 @@ def enc_wheel_progress_m(bot, l0, r0):
     dl, dr = enc_wheel_deltas_rad(bot, l0, r0)
     return R_WHEEL_M * dl, R_WHEEL_M * dr
 
-# ----------------- Motion primitives (ENCODER-ONLY) -----------------
+# ======================================================================
+# Section: Encoder-Only Motion Primitives
+# ======================================================================
 def drive_straight_feet(bot, dist_ft, pct=PCT_STRAIGHT, label="straight(ft)",
                         accel_m=0.20, decel_m=0.20, min_scale=0.35, K_bal=120.0):
     """
@@ -288,7 +310,9 @@ def drive_arc_by_wheel_dists(bot, sL_m, sR_m, base_pct=PCT_ARC, label="arc"):
     bot.stop_motors()
     print(f"{label}: done (L≈{abs(sL):.4f} m, R≈{abs(sR):.4f} m)")
 
-# ----------------- Leg-specific functions -----------------
+# ======================================================================
+# Section: Leg-Specific Waypoint Functions
+# ======================================================================
 def p0_to_p1(bot):
     """Straight from P0 to P1 (encoder-only)."""
     x1_ft, y1_ft, _ = WPTS[0]
@@ -350,65 +374,52 @@ def p3_to_p4_arc(bot):
     drive_arc_by_wheel_dists(bot, sL, sR, base_pct=PCT_ARC, label="P3→P4 arc")
 
 def p4_to_p5(bot):
-        """
-        P4 → P5 (encoder-only):
-            1) +45° CCW pre-turn (π/4)
-            2) straight along diagonal ≈ 0.7071 ft
+    """
+    P4 → P5:
+        1) Rotate from the P4 orientation to the P5 orientation.
+        2) Drive the diagonal segment between the waypoints.
+    """
 
-        The function performs a single pre-turn then the straight leg. If you
-        observe a systematic overshoot on hardware, use the optional IMU trim
-        (commented) below to correct residual heading error after the straight.
-        """
+    # 1) Pre-turn derived from waypoint headings
+    heading_delta = ((WPTS[5][2] - WPTS[4][2] + math.pi) % (2 * math.pi)) - math.pi
+    delta_deg = math.degrees(heading_delta)
+    print(f"\nP4→P5 pre-turn: Δθ={delta_deg:+.1f}°")
+    turn_in_place_by_angle_imu(bot, dtheta_rad=heading_delta, label="P4→P5 pre-turn (IMU)")
 
-        # 1) +45° CCW pre-turn (encoder-based spin)
-        print("\nP4→P5 pre-turn: +45° CCW")
-        # turn_in_place_by_angle(bot, dtheta_rad=math.pi/4, pct=PCT_TURN, label="P4→P5 pre-turn")
-        turn_in_place_by_angle_imu(bot, dtheta_rad=math.pi/4, label="P4→P5 pre-turn (IMU)")
+    bot.stop_motors()
+    time.sleep(0.12)
 
+    # 2) Straight along the diagonal: d = sqrt(0.5) ft
+    d_ft = math.sqrt(0.5)
+    print(f"P4→P5 straight: {d_ft:.4f} ft (0.7071 ft expected)")
+    drive_straight_feet(bot, d_ft, pct=PCT_STRAIGHT, label="P4→P5 straight")
 
-        # brief settle
-        bot.stop_motors(); time.sleep(0.12)
+    bot.stop_motors()
+    time.sleep(0.12)
 
-        # 2) straight along the diagonal: d = sqrt(0.5) ft
-        d_ft = math.sqrt(0.5)
-        print(f"P4→P5 straight: {d_ft:.4f} ft (0.7071 ft expected)")
-        drive_straight_feet(bot, d_ft, pct=PCT_STRAIGHT, label="P4→P5 straight")
-
-        # brief settle
-        bot.stop_motors(); time.sleep(0.12)
-
-        # Optional IMU-based trim (uncomment and adapt if IMU is available on `bot`):
-        # try:
-        #     # waypoint heading at P5 in degrees-from-east
-        #     target_deg = (math.degrees(WPTS[5][2]) + 360.0) % 360.0
-        #     cur_deg = bot.imu.get_heading_cached()  # or bot.imu.get_heading()
-        #     if cur_deg is not None:
-        #         ddeg = ((target_deg - cur_deg + 180.0) % 360.0) - 180.0
-        #         if abs(ddeg) > 1.0:
-        #             print(f"P4→P5 IMU trim: Δ={ddeg:.1f}°")
-        #             turn_in_place_by_angle(bot, math.radians(ddeg), pct=PCT_TURN*0.6, label="P4→P5 IMU trim")
-        # except Exception:
-        #     pass
 def p5_to_p6(bot, margin_pct: float = 0.02):
     """
     P5→P6:
-      1) IMU pre-turn (relative +45° by default)
-      2) Straight with a small safety margin (default 2% shorter)
+      1) IMU pre-turn using the waypoint heading difference.
+      2) Straight with a small safety margin (default 2% shorter).
     """
     x1, y1, th1 = WPTS[5]   # P5
     x2, y2, th2 = WPTS[6]   # P6
 
-    # --- Step 1: Heading change (IMU, relative +45°) ---
-    print(f"\nP5→P6 turn: target +45° (relative)")
+    # --- Step 1: Heading change from waypoint orientations ---
+    heading_delta = ((th2 - th1 + math.pi) % (2*math.pi)) - math.pi
+    delta_deg = math.degrees(heading_delta)
+    print(f"\nP5→P6 turn: Δθ={delta_deg:+.1f}° (relative)")
     turn_in_place_by_angle_imu(
         bot,
-        dtheta_rad=math.radians(45.0),
+        dtheta_rad=heading_delta,
         # slightly gentler settle so it doesn't false-timeout
         fast_pct=16.0, slow_pct=5.0, kp_pct_per_deg=1.8,
         settle_deg=1.2, settle_time_s=0.25, timeout_s=8.0,
         label="P5→P6 pre-turn (IMU)"
     )
-    bot.stop_motors(); time.sleep(0.12)
+    bot.stop_motors()
+    time.sleep(0.12)
 
     # --- Step 2: Straight distance with margin ---
     d_ft_nominal = math.hypot(x2 - x1, y2 - y1)
@@ -433,10 +444,11 @@ def p6_to_p7(bot):
     dtheta = ((dtheta + math.pi) % (2*math.pi)) - math.pi  # normalize
     print(f"\nP6→P7 turn: Δθ={math.degrees(dtheta):+.1f}°")
     # turn_in_place_by_angle(bot, dtheta_rad=dtheta, pct=PCT_TURN, label="P6→P7 turn")
-    turn_in_place_by_angle_imu(bot, dtheta_rad=th2, label="P6→P7 turn (IMU)")
+    turn_in_place_by_angle_imu(bot, dtheta_rad=dtheta, label="P6→P7 turn (IMU)")
 
 
-    bot.stop_motors(); time.sleep(0.12)
+    bot.stop_motors()
+    time.sleep(0.12)
 
     # --- Step 2: Straight distance ---
     d_ft = math.hypot(x2 - x1, y2 - y1)
@@ -462,7 +474,8 @@ def p7_to_p8(bot):
     turn_in_place_by_angle_imu(bot, dtheta_rad=dtheta, label="P7→P8 turn (IMU)")
 
 
-    bot.stop_motors(); time.sleep(0.12)
+    bot.stop_motors()
+    time.sleep(0.12)
 
     # --- Step 2: Straight distance ---
     d_ft = math.hypot(x2 - x1, y2 - y1)
@@ -471,6 +484,7 @@ def p7_to_p8(bot):
 
     bot.stop_motors()
     print(f"P7→P8: done; now at {WPTS[8]}")
+
 def p8_to_p9(bot):
     """
     Encoder-only P8→P9:
@@ -487,7 +501,8 @@ def p8_to_p9(bot):
     turn_in_place_by_angle_imu(bot, dtheta_rad=dtheta, label="P8→P9 turn (IMU)")
 
 
-    bot.stop_motors(); time.sleep(0.12)
+    bot.stop_motors()
+    time.sleep(0.12)
 
     # --- Step 2: Straight distance ---
     d_ft = math.hypot(x2 - x1, y2 - y1)
@@ -513,7 +528,8 @@ def p9_to_p10(bot):
     # turn_in_place_by_angle(bot, dtheta_rad=dtheta, pct=PCT_TURN, label="P9→P10 turn")
     turn_in_place_by_angle_imu(bot, dtheta_rad=dtheta, label="P9→P10 turn (IMU)")
 
-    bot.stop_motors(); time.sleep(0.12)
+    bot.stop_motors()
+    time.sleep(0.12)
 
     # --- Step 2: Straight distance ---
     d_ft = math.hypot(x2 - x1, y2 - y1)
@@ -541,7 +557,8 @@ def p10_to_p11(bot):
     # turn_in_place_by_angle(bot, dtheta_rad=dtheta1, pct=PCT_TURN, label="P10→P11 pre-turn")
     turn_in_place_by_angle_imu(bot, dtheta_rad=dtheta1, label="P10→P11 turn (IMU)")
 
-    bot.stop_motors(); time.sleep(0.12)
+    bot.stop_motors()
+    time.sleep(0.12)
 
     # ---------- Step 2: Quarter-circle RIGHT arc ----------
     # From north to east with Δx=+1, Δy=+1 ⇒ radius R = 1.0 ft (quarter circle)
@@ -564,11 +581,8 @@ def p10_to_p11(bot):
     print(f"Wheel targets: L={sL:.4f} m, R={sR:.4f} m  (RIGHT turn, both forward)")
     drive_arc_by_wheel_dists(bot, sL, sR, base_pct=PCT_ARC, label="P10→P11 quarter arc")
 
-    bot.stop_motors(); time.sleep(0.10)
-
-    # (Optional) tiny final trim to th2 if you want:
-    # dtheta2 = ((th2 - 0.0 + math.pi) % (2*math.pi)) - math.pi  # expected 0
-    # turn_in_place_by_angle(bot, dtheta_rad=dtheta2, pct=PCT_TURN*0.8, label="P10→P11 final trim")
+    bot.stop_motors()
+    time.sleep(0.10)
 
     print(f"P10→P11: done; now at {WPTS[11]} (expected)")
 
@@ -586,7 +600,8 @@ def p11_to_p12(bot):
         print(f"\nP11→P12 trim turn: Δθ={math.degrees(dtheta):+.1f}°")
         turn_in_place_by_angle_imu(bot, dtheta_rad=dtheta, label="P11-P12 turn (IMU)")
 
-    bot.stop_motors(); time.sleep(0.12)
+    bot.stop_motors()
+    time.sleep(0.12)
 
     # Straight distance from waypoints
     d_ft = math.hypot(x2 - x1, y2 - y1)  # should be 2.5 ft
@@ -629,7 +644,9 @@ def p12_to_p13(bot):
     # Execute arc by distances (keeps the ratio so both wheels finish together)
     drive_arc_by_wheel_dists(bot, sL_m=sL, sR_m=sR, base_pct=PCT_ARC, label="P12→P13 arc")
 
-# ----------------- Main -----------------
+# ======================================================================
+# Section: Entry Point
+# ======================================================================
 def main():
     bot = HamBot(lidar_enabled=False, camera_enabled=False)
     try:
