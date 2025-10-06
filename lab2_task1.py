@@ -71,7 +71,9 @@ def forward_wall_stop(bot: HamBot,
                       settle_band_m: float = DEFAULT_SETTLE_BAND,
                       settle_time_s: float = DEFAULT_SETTLE_TIME,
                       timeout_s: float = DEFAULT_TIMEOUT,
-                      integral_clamp: float = DEFAULT_I_CLAMP) -> None:
+                      integral_clamp: float = DEFAULT_I_CLAMP,
+                      meas_alpha: float = 1.0,
+                      deriv_alpha: float = 1.0) -> None:
     """
     Run a PID loop that drives toward (or backs up from) an end wall until
     the robot stabilizes at the requested clearance.
@@ -80,6 +82,10 @@ def forward_wall_stop(bot: HamBot,
     last_loop = None
     integral = 0.0
     prev_error = None
+    # smoothed forward distance (exponential moving average)
+    smoothed_front = None
+    # filtered derivative (low-pass)
+    prev_filtered_derivative = None
     settle_start = None
     start_time = time.time()
 
@@ -94,6 +100,10 @@ def forward_wall_stop(bot: HamBot,
             scan = bot.get_range_image()
             front_m = _front_distance_m(scan)
 
+            # clamp alphas
+            meas_alpha = max(0.0, min(1.0, meas_alpha))
+            deriv_alpha = max(0.0, min(1.0, deriv_alpha))
+
             now = time.time()
             dt = dt_target if last_loop is None else max(1e-3, now - last_loop)
             last_loop = now
@@ -104,15 +114,32 @@ def forward_wall_stop(bot: HamBot,
                 time.sleep(0.2)
                 continue
 
-            error = front_m - target_m
+            # exponential smoothing on the forward measurement
+            if smoothed_front is None:
+                smoothed_front = front_m
+            else:
+                smoothed_front = meas_alpha * front_m + (1.0 - meas_alpha) * smoothed_front
+
+            used_front = smoothed_front
+
+            error = used_front - target_m
             integral = max(-integral_clamp, min(integral_clamp, integral + error * dt))
             integral_clamped = integral_clamp > 0 and abs(integral) >= (integral_clamp - 1e-6)
+
+            # derivative based on filtered error
             derivative = 0.0 if prev_error is None else (error - prev_error) / dt
             prev_error = error
 
+            # low-pass filter the derivative to reduce noise
+            if prev_filtered_derivative is None:
+                filtered_deriv = derivative
+            else:
+                filtered_deriv = deriv_alpha * derivative + (1.0 - deriv_alpha) * prev_filtered_derivative
+            prev_filtered_derivative = filtered_deriv
+
             p_term = kp * error
             i_term = ki * integral
-            d_term = kd * derivative
+            d_term = kd * filtered_deriv
             raw_cmd = p_term + i_term + d_term
 
             cmd = raw_cmd
@@ -141,7 +168,7 @@ def forward_wall_stop(bot: HamBot,
                 "t={:6.2f}s front={:5.3f} m err={:+.3f} m "
                 "P={:+6.2f} I={:+6.2f} D={:+6.2f} raw={:+6.2f} rpm cmd={:+6.2f} rpm {}{}{}".format(
                     elapsed,
-                    front_m,
+                    used_front,
                     error,
                     p_term,
                     i_term,
@@ -200,6 +227,10 @@ def main() -> None:
                         help="Safety timeout for the controller [s]")
     parser.add_argument("--i-clamp", type=float, default=DEFAULT_I_CLAMP,
                         help="Integral windup clamp (|integral| limit) [m·s]")
+    parser.add_argument("--meas-alpha", type=float, default=1.0,
+                        help="Exponential smoothing alpha for range measurement (0..1). 1.0=no smoothing")
+    parser.add_argument("--deriv-alpha", type=float, default=1.0,
+                        help="Low-pass alpha for derivative term (0..1). 1.0=no filtering")
 
     args = parser.parse_args()
 
@@ -216,7 +247,9 @@ def main() -> None:
                           settle_band_m=args.settle_band,
                           settle_time_s=args.settle_time,
                           timeout_s=args.timeout,
-                          integral_clamp=args.i_clamp)
+                          integral_clamp=args.i_clamp,
+                          meas_alpha=args.meas_alpha,
+                          deriv_alpha=args.deriv_alpha)
     except KeyboardInterrupt:
         print("\nInterrupted; stopping motors")
     finally:
