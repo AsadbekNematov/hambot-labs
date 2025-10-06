@@ -33,6 +33,7 @@ DEFAULT_I_CLAMP = 0.7         # integral term clamp [m·s]
 MOTOR_MAX_RPM = 75.0          # HamBot motor driver clamp (see HamBot.check_speed)
 DEFAULT_APPROACH_ZONE_M = 0.08   # slowdown starts only in the final few centimeters [m]
 DEFAULT_APPROACH_FLOOR = 0.10    # fraction of max speed allowed when sitting at the target
+DEFAULT_OUTER_ZONE_FLOOR = 1.0   # retain 100% of available speed until entering the approach zone
 
 
 # ======================================================================
@@ -85,7 +86,8 @@ def forward_wall_stop(bot: HamBot,
                       reach_tol: float = 0.005,
                       reach_confirm: int = 3,
                       approach_zone_m: float = DEFAULT_APPROACH_ZONE_M,
-                      approach_floor: float = DEFAULT_APPROACH_FLOOR) -> None:
+                      approach_floor: float = DEFAULT_APPROACH_FLOOR,
+                      outer_zone_floor: float = DEFAULT_OUTER_ZONE_FLOOR) -> None:
     """
     Run a PID loop that drives toward (or backs up from) an end wall until
     the robot stabilizes at the requested clearance.
@@ -93,8 +95,11 @@ def forward_wall_stop(bot: HamBot,
     If ``approach_zone_m`` is positive the controller linearly tapers the
     allowable motor output from 100% when outside the zone down to at least
     ``approach_floor`` (fraction of the allowed top speed) right at the
-    target. ``max_speed_pct`` provides an optional percentage-based way to
-    configure the top speed relative to the HamBot's 75 rpm ceiling.
+    target. ``outer_zone_floor`` enforces a minimum portion of the available
+    top speed while still outside the slowdown zone so the robot cruises at
+    full pace until the taper begins. ``max_speed_pct`` provides an optional
+    percentage-based way to configure the top speed relative to the HamBot's
+    75 rpm ceiling.
     """
     if max_speed_pct is not None:
         max_speed_pct = max(0.0, min(100.0, max_speed_pct))
@@ -105,6 +110,7 @@ def forward_wall_stop(bot: HamBot,
     max_rpm = max(0.0, min(MOTOR_MAX_RPM, max_rpm))
     approach_zone_m = max(0.0, approach_zone_m)
     approach_floor = max(0.0, min(1.0, approach_floor))
+    outer_zone_floor = max(0.0, min(1.0, outer_zone_floor))
     floor_from_min_effort = min(1.0, min_effort_rpm / max_rpm) if max_rpm > 1e-6 else 0.0
     effective_floor = max(approach_floor, floor_from_min_effort)
 
@@ -136,6 +142,9 @@ def forward_wall_stop(bot: HamBot,
         print(f"  approach slowdown : start {approach_zone_m:.2f} m out, floor {requested_floor_pct:.1f}%")
         if effective_floor > approach_floor:
             print(f"    adjusted floor  : {effective_floor_pct:.1f}% (limited by min-effort {min_effort_rpm:.1f} rpm)")
+        if outer_zone_floor > 0.0:
+            cruise_pct = outer_zone_floor * 100.0
+            print(f"  cruise hold       : ≥{cruise_pct:.1f}% of max until slowdown zone")
     print(f"  stop mode         : {stop_mode}")
     if stop_mode == "settle":
         print(f"    settle band     : ±{settle_band_m:.3f} m (stop tol ±{settle_stop_tol:.3f} m)")
@@ -213,6 +222,18 @@ def forward_wall_stop(bot: HamBot,
                 cmd = -current_max_rpm
                 saturated = True
 
+            outer_zone_boost = False
+            if approach_zone_m > 1e-6 and distance_error > approach_zone_m:
+                desired_outer_rpm = min(current_max_rpm, max_rpm * outer_zone_floor)
+                if desired_outer_rpm > 0.0 and abs(cmd) < desired_outer_rpm:
+                    direction = error
+                    if abs(direction) < 1e-9:
+                        direction = 1.0
+                    cmd = math.copysign(desired_outer_rpm, direction)
+                    outer_zone_boost = True
+                    if abs(cmd) >= current_max_rpm - 1e-6:
+                        saturated = True
+
             effective_min_effort_rpm = min(min_effort_rpm, current_max_rpm)
             min_effort_applied = False
             if effective_min_effort_rpm > 0.0 and abs(cmd) < effective_min_effort_rpm:
@@ -241,10 +262,11 @@ def forward_wall_stop(bot: HamBot,
             cmd_pct = (cmd / MOTOR_MAX_RPM) * 100.0 if MOTOR_MAX_RPM > 1e-6 else 0.0
             max_pct = (current_max_rpm / MOTOR_MAX_RPM) * 100.0 if MOTOR_MAX_RPM > 1e-6 else 0.0
             slowdown_flag = "[SLOW]" if speed_scale < 0.999 else ""
+            cruise_flag = "[CRUISE]" if outer_zone_boost else ""
             print(
                 "t={:6.2f}s front={:5.3f} m err={:+.3f} m "
                 "P={:+6.2f} I={:+6.2f} D={:+6.2f} raw={:+6.2f} rpm ({:+6.1f}%) "
-                "cmd={:+6.2f} rpm ({:+6.1f}%) max={:5.1f}% {}{}{}{}".format(
+                "cmd={:+6.2f} rpm ({:+6.1f}%) max={:5.1f}% {}{}{}{}{}".format(
                     elapsed,
                     used_front,
                     error,
@@ -260,6 +282,7 @@ def forward_wall_stop(bot: HamBot,
                     "[BIAS]" if min_effort_applied else "",
                     "[I-CLAMP]" if integral_clamped else "",
                     slowdown_flag,
+                    cruise_flag,
                 )
             )
 
@@ -347,6 +370,8 @@ def main() -> None:
                         help="Distance from target where speed begins tapering [m]")
     parser.add_argument("--approach-floor-pct", type=float, default=DEFAULT_APPROACH_FLOOR * 100.0,
                         help="Minimum percent of top speed to retain when on target (0-100)")
+    parser.add_argument("--outer-zone-floor-pct", type=float, default=DEFAULT_OUTER_ZONE_FLOOR * 100.0,
+                        help="Minimum percent of top speed to retain outside the slowdown zone (0-100)")
 
     args = parser.parse_args()
 
@@ -371,7 +396,8 @@ def main() -> None:
                           reach_tol=args.reach_tol,
                           reach_confirm=args.reach_confirm,
                           approach_zone_m=args.approach_zone,
-                          approach_floor=args.approach_floor_pct / 100.0)
+                          approach_floor=args.approach_floor_pct / 100.0,
+                          outer_zone_floor=args.outer_zone_floor_pct / 100.0)
     except KeyboardInterrupt:
         print("\nInterrupted; stopping motors")
     finally:
