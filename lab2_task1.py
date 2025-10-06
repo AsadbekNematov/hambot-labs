@@ -18,6 +18,9 @@ from src.robot_systems.robot import HamBot
 # Section: PID Parameters and Control Defaults
 # ======================================================================
 TARGET_DIST_M = 1.0           # desired clearance to the forward wall [m]
+DEFAULT_KP = 40.0             # proportional gain tuned for brisk approach
+DEFAULT_KI = 0.0              # integral gain stays off by default
+DEFAULT_KD = 0.8              # derivative gain lightly damps overshoot
 DEFAULT_LOOP_HZ = 15.0        # control loop frequency [Hz]
 FRONT_INDEX = 180             # lidar index facing forward
 FRONT_WINDOW = 7              # half-window (±) for averaging forward samples
@@ -308,9 +311,9 @@ def main() -> None:
     parser = argparse.ArgumentParser(
         description="Lab 2 Task 1: PID forward wall stop using HamBot lidar"
     )
-    parser.add_argument("--kp", type=float, default=5.0, help="Proportional gain")
-    parser.add_argument("--ki", type=float, default=0.0, help="Integral gain")
-    parser.add_argument("--kd", type=float, default=0.8, help="Derivative gain")
+    parser.add_argument("--kp", type=float, default=DEFAULT_KP, help=f"Proportional gain (default {DEFAULT_KP:.1f})")
+    parser.add_argument("--ki", type=float, default=DEFAULT_KI, help=f"Integral gain (default {DEFAULT_KI:.1f})")
+    parser.add_argument("--kd", type=float, default=DEFAULT_KD, help=f"Derivative gain (default {DEFAULT_KD:.1f})")
     parser.add_argument("--target", type=float, default=TARGET_DIST_M,
                         help="Desired distance from the wall [m]")
     parser.add_argument("--loop-hz", type=float, default=DEFAULT_LOOP_HZ,
