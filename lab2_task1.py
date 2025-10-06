@@ -104,27 +104,55 @@ def forward_wall_stop(bot: HamBot,
                 time.sleep(0.2)
                 continue
 
-            error = target_m - front_m
+            error = front_m - target_m
             integral = max(-integral_clamp, min(integral_clamp, integral + error * dt))
+            integral_clamped = integral_clamp > 0 and abs(integral) >= (integral_clamp - 1e-6)
             derivative = 0.0 if prev_error is None else (error - prev_error) / dt
             prev_error = error
 
-            cmd = kp * error + ki * integral + kd * derivative
-            cmd = max(-max_rpm, min(max_rpm, cmd))
+            p_term = kp * error
+            i_term = ki * integral
+            d_term = kd * derivative
+            raw_cmd = p_term + i_term + d_term
 
+            cmd = raw_cmd
+            saturated = False
+            if cmd > max_rpm:
+                cmd = max_rpm
+                saturated = True
+            elif cmd < -max_rpm:
+                cmd = -max_rpm
+                saturated = True
+
+            min_effort_applied = False
             if abs(cmd) < min_effort_rpm:
                 if abs(error) <= settle_band_m:
                     cmd = 0.0
                 else:
                     direction = cmd if cmd != 0.0 else error
                     cmd = math.copysign(min_effort_rpm, direction)
+                    min_effort_applied = True
 
             bot.set_left_motor_speed(cmd)
             bot.set_right_motor_speed(cmd)
 
             elapsed = now - start_time
-            print(f"t={elapsed:6.2f}s front={front_m:5.3f} m err={error:+.3f} m "
-                  f"u={cmd:+5.1f} rpm")
+            print(
+                "t={:6.2f}s front={:5.3f} m err={:+.3f} m "
+                "P={:+6.2f} I={:+6.2f} D={:+6.2f} raw={:+6.2f} rpm cmd={:+6.2f} rpm {}{}{}".format(
+                    elapsed,
+                    front_m,
+                    error,
+                    p_term,
+                    i_term,
+                    d_term,
+                    raw_cmd,
+                    cmd,
+                    "[SAT]" if saturated else "",
+                    "[BIAS]" if min_effort_applied else "",
+                    "[I-CLAMP]" if integral_clamped else "",
+                )
+            )
 
             if abs(error) <= settle_band_m and cmd == 0.0:
                 if settle_start is None:
