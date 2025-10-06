@@ -94,10 +94,19 @@ def forward_wall_stop(bot: HamBot,
     reach_count = 0
     start_time = time.time()
 
+    settle_stop_tol = settle_band_m
+    if stop_mode == "settle" and reach_tol is not None and reach_tol > 0.0:
+        settle_stop_tol = min(settle_band_m, reach_tol)
+
     print("Starting PID wall-stop controller")
     print(f"  target distance   : {target_m:.3f} m")
     print(f"  gains (kp, ki, kd): ({kp:.4f}, {ki:.4f}, {kd:.4f})")
     print(f"  loop frequency    : {loop_hz:.1f} Hz")
+    print(f"  stop mode         : {stop_mode}")
+    if stop_mode == "settle":
+        print(f"    settle band     : ±{settle_band_m:.3f} m (stop tol ±{settle_stop_tol:.3f} m)")
+    else:
+        print(f"    reach tolerance : ±{reach_tol:.3f} m with {reach_confirm} confirmations")
 
     try:
         while True:
@@ -163,7 +172,7 @@ def forward_wall_stop(bot: HamBot,
                 # continue moving until it reaches the precise target (reach_tol). Instead always
                 # apply the minimum effort to overcome stiction so the robot can close the final gap.
                 if stop_mode == "settle":
-                    if abs(error) <= settle_band_m:
+                    if abs(error) <= settle_stop_tol:
                         cmd = 0.0
                     else:
                         direction = cmd if cmd != 0.0 else error
@@ -197,7 +206,7 @@ def forward_wall_stop(bot: HamBot,
             )
 
             if stop_mode == "settle":
-                if abs(error) <= settle_band_m and cmd == 0.0:
+                if abs(error) <= settle_stop_tol and cmd == 0.0:
                     if settle_start is None:
                         settle_start = now
                     elif now - settle_start >= settle_time_s:
