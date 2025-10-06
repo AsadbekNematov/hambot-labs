@@ -23,6 +23,8 @@ DEFAULT_KI = 0.0              # integral gain stays off by default
 DEFAULT_KD = 0.8              # derivative gain lightly damps overshoot
 DEFAULT_LOOP_HZ = 15.0        # control loop frequency [Hz]
 FRONT_INDEX = 180             # lidar index facing forward
+LEFT_START_INDEX = 160        # lidar minimum range for left wall following
+LEFT_END_INDEX = 200          # lidar maximum range for left wall following
 FRONT_WINDOW = 7              # half-window (±) for averaging forward samples
 DEFAULT_MAX_RPM = 35.0        # saturation limit for motor commands [RPM]
 DEFAULT_MIN_EFFORT = 6.0      # minimum effort to overcome drivetrain friction [RPM]
@@ -62,6 +64,27 @@ def _front_distance_m(range_image: Iterable[float],
         return None
 
     return mean(samples)
+
+def _side_distance_m(range_image: Iterable[float], start_inx = LEFT_START_INDEX, end_inx = LEFT_END_INDEX):
+  if not range_image:
+    return None
+
+  samples = []
+  scan = list(range_image)
+  total = len(scan)
+  if total == 0:
+        return None
+
+  for idx in range(start_idx, end_idx + 1):
+    real_idx = idx % total                    # Keeps from indexing outside of array
+    dist_mm = scan[real_idx]
+    if dist_mm and dist_mm > 0:
+            samples.append(dist_mm / 1000.0)  # convert mm → m
+
+  if not samples:
+      return None
+
+  return mean(samples)   
 
 
 # ======================================================================
