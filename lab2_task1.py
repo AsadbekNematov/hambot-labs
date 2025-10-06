@@ -28,8 +28,8 @@ DEFAULT_SETTLE_TIME = 1.0     # duration to remain in band before declaring succ
 DEFAULT_TIMEOUT = 120.0       # safety timeout for the control loop [s]
 DEFAULT_I_CLAMP = 0.7         # integral term clamp [m·s]
 MOTOR_MAX_RPM = 75.0          # HamBot motor driver clamp (see HamBot.check_speed)
-DEFAULT_APPROACH_ZONE_M = 0.25  # distance from target where we start slowing the robot [m]
-DEFAULT_APPROACH_FLOOR = 0.10   # fraction of max speed allowed when sitting at the target
+DEFAULT_APPROACH_ZONE_M = 0.08   # slowdown starts only in the final few centimeters [m]
+DEFAULT_APPROACH_FLOOR = 0.10    # fraction of max speed allowed when sitting at the target
 
 
 # ======================================================================
