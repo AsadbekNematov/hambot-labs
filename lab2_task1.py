@@ -73,7 +73,9 @@ def forward_wall_stop(bot: HamBot,
                       timeout_s: float = DEFAULT_TIMEOUT,
                       integral_clamp: float = DEFAULT_I_CLAMP,
                       meas_alpha: float = 1.0,
-                      deriv_alpha: float = 1.0) -> None:
+                      deriv_alpha: float = 1.0,
+                      stop_mode: str = "settle",
+                      reach_tol: float = 0.005) -> None:
     """
     Run a PID loop that drives toward (or backs up from) an end wall until
     the robot stabilizes at the requested clearance.
@@ -181,14 +183,30 @@ def forward_wall_stop(bot: HamBot,
                 )
             )
 
-            if abs(error) <= settle_band_m and cmd == 0.0:
-                if settle_start is None:
-                    settle_start = now
-                elif now - settle_start >= settle_time_s:
-                    print("Setpoint maintained; stopping motors")
+            if stop_mode == "settle":
+                if abs(error) <= settle_band_m and cmd == 0.0:
+                    if settle_start is None:
+                        settle_start = now
+                    elif now - settle_start >= settle_time_s:
+                        print("Setpoint maintained; stopping motors")
+                        break
+                else:
+                    settle_start = None
+            elif stop_mode == "reach":
+                # stop as soon as the (filtered) measurement is within reach_tol of target
+                if abs(error) <= reach_tol:
+                    print(f"Reached target (|err|<={reach_tol}); stopping motors")
                     break
             else:
-                settle_start = None
+                # unknown stop mode: default to settle behavior
+                if abs(error) <= settle_band_m and cmd == 0.0:
+                    if settle_start is None:
+                        settle_start = now
+                    elif now - settle_start >= settle_time_s:
+                        print("Setpoint maintained; stopping motors")
+                        break
+                else:
+                    settle_start = None
 
             if timeout_s and elapsed >= timeout_s:
                 print(f"Timeout {timeout_s:.1f}s reached; stopping controller")
@@ -231,6 +249,11 @@ def main() -> None:
                         help="Exponential smoothing alpha for range measurement (0..1). 1.0=no smoothing")
     parser.add_argument("--deriv-alpha", type=float, default=1.0,
                         help="Low-pass alpha for derivative term (0..1). 1.0=no filtering")
+    parser.add_argument("--stop-mode", type=str, default="settle",
+                        choices=["settle", "reach"],
+                        help="How to decide when to stop: 'settle' waits in-band; 'reach' stops when within reach-tol")
+    parser.add_argument("--reach-tol", type=float, default=0.005,
+                        help="Tolerance [m] for 'reach' stop mode (default 0.005 m)")
 
     args = parser.parse_args()
 
@@ -249,7 +272,9 @@ def main() -> None:
                           timeout_s=args.timeout,
                           integral_clamp=args.i_clamp,
                           meas_alpha=args.meas_alpha,
-                          deriv_alpha=args.deriv_alpha)
+                          deriv_alpha=args.deriv_alpha,
+                          stop_mode=args.stop_mode,
+                          reach_tol=args.reach_tol)
     except KeyboardInterrupt:
         print("\nInterrupted; stopping motors")
     finally:
