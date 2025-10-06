@@ -18,18 +18,19 @@ from src.robot_systems.robot import HamBot
 # ======================================================================
 # Section: PID Parameters and Control Defaults
 # ======================================================================
-TARGET_DIST_M = 1.0           # desired clearance to the forward wall [m]
-DEFAULT_LOOP_HZ = 15.0        # control loop frequency [Hz]
-FRONT_INDEX = 180             # lidar index facing forward
-FRONT_WINDOW = 7              # half-window (±) for averaging forward samples
-DEFAULT_MAX_RPM = 35.0        # saturation limit for motor commands [RPM]
-DEFAULT_MIN_EFFORT = 6.0      # minimum effort to overcome drivetrain friction [RPM]
-DEFAULT_SETTLE_BAND = 0.01    # acceptable distance band around the setpoint [m]
-DEFAULT_SETTLE_TIME = 1.0     # duration to remain in band before declaring success [s]
-DEFAULT_TIMEOUT = 120.0       # safety timeout for the control loop [s]
-DEFAULT_I_CLAMP = 0.7         # integral term clamp [m·s]
-NEAR_TARGET_MIN_EFFORT = 2.5  # minimum effort when inside the near-target band [RPM]
-NEAR_TARGET_ERROR_BAND = 0.08 # error magnitude where we begin tapering the min effort [m]
+TARGET_DIST_M = 1.0             # desired clearance to the forward wall [m]
+DEFAULT_LOOP_HZ = 15.0          # control loop frequency [Hz]
+FRONT_INDEX = 180               # lidar index facing forward
+FRONT_WINDOW = 7                # half-window (±) for averaging forward samples
+DEFAULT_MAX_RPM = 35.0          # saturation limit for motor commands [RPM]
+DEFAULT_MIN_EFFORT = 6.0        # minimum effort to overcome drivetrain friction [RPM]
+DEFAULT_SETTLE_BAND = 0.01      # acceptable distance band around the setpoint [m]
+DEFAULT_SETTLE_TIME = 1.0       # duration to remain in band before declaring success [s]
+DEFAULT_TIMEOUT = 120.0         # safety timeout for the control loop [s]
+DEFAULT_I_CLAMP = 0.7           # integral term clamp [m·s]
+NEAR_TARGET_MIN_EFFORT = 0.8    # absolute floor for min effort near the target [RPM]
+NEAR_TARGET_ERROR_BAND = 0.08   # error magnitude where we begin tapering the min effort [m]
+DEFAULT_SLEW_RATE = 160.0       # maximum change in applied command per second [RPM/s]
 
 
 # ======================================================================
@@ -77,7 +78,8 @@ def forward_wall_stop(bot: HamBot,
                       integral_clamp: float = DEFAULT_I_CLAMP,
                       log_path: Optional[str] = None,
                       min_start_distance: Optional[float] = None,
-                      max_start_distance: Optional[float] = None) -> None:
+                      max_start_distance: Optional[float] = None,
+                      slew_rate_rpm_per_s: float = DEFAULT_SLEW_RATE) -> None:
     """
     Run a PID loop that drives toward (or backs up from) an end wall until
     the robot stabilizes at the requested clearance.
@@ -119,6 +121,8 @@ def forward_wall_stop(bot: HamBot,
             "min_effort_applied",
             "integral_clamped",
         ])
+
+    prev_cmd = 0.0
 
     try:
         while True:
@@ -176,7 +180,9 @@ def forward_wall_stop(bot: HamBot,
             if abs(error) <= settle_band_m:
                 effective_min_effort = 0.0
             elif abs(error) <= NEAR_TARGET_ERROR_BAND:
-                effective_min_effort = min(effective_min_effort, NEAR_TARGET_MIN_EFFORT)
+                scale = abs(error) / NEAR_TARGET_ERROR_BAND
+                effective_min_effort = max(NEAR_TARGET_MIN_EFFORT,
+                                           scale * min_effort_rpm)
 
             min_effort_applied = False
             if abs(cmd) < effective_min_effort:
@@ -186,6 +192,11 @@ def forward_wall_stop(bot: HamBot,
                     direction = cmd if cmd != 0.0 else error
                     cmd = math.copysign(effective_min_effort, direction)
                     min_effort_applied = True
+
+            if slew_rate_rpm_per_s > 0:
+                max_delta = slew_rate_rpm_per_s * dt
+                cmd = max(min(cmd, prev_cmd + max_delta), prev_cmd - max_delta)
+            prev_cmd = cmd
 
             bot.set_left_motor_speed(cmd)
             bot.set_right_motor_speed(cmd)
@@ -278,8 +289,8 @@ def main() -> None:
     parser = argparse.ArgumentParser(
         description="Lab 2 Task 1: PID forward wall stop using HamBot lidar"
     )
-    parser.add_argument("--kp", type=float, default=6.0, help="Proportional gain")
-    parser.add_argument("--ki", type=float, default=0.0, help="Integral gain")
+    parser.add_argument("--kp", type=float, default=7.0, help="Proportional gain")
+    parser.add_argument("--ki", type=float, default=0.02, help="Integral gain")
     parser.add_argument("--kd", type=float, default=0.8, help="Derivative gain")
     parser.add_argument("--target", type=float, default=TARGET_DIST_M,
                         help="Desired distance from the wall [m]")
@@ -303,6 +314,8 @@ def main() -> None:
                         help="Warn if initial distance is below this threshold [m]")
     parser.add_argument("--max-start-dist", type=float, default=None,
                         help="Warn if initial distance is above this threshold [m]")
+    parser.add_argument("--slew-rate", type=float, default=DEFAULT_SLEW_RATE,
+                        help="Max change in applied RPM per second (set <=0 to disable)")
 
     args = parser.parse_args()
 
@@ -322,7 +335,8 @@ def main() -> None:
                           integral_clamp=args.i_clamp,
                           log_path=args.log_file,
                           min_start_distance=args.min_start_dist,
-                          max_start_distance=args.max_start_dist)
+                          max_start_distance=args.max_start_dist,
+                          slew_rate_rpm_per_s=args.slew_rate)
     except KeyboardInterrupt:
         print("\nInterrupted; stopping motors")
     finally:
