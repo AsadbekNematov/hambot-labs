@@ -75,7 +75,8 @@ def forward_wall_stop(bot: HamBot,
                       meas_alpha: float = 1.0,
                       deriv_alpha: float = 1.0,
                       stop_mode: str = "settle",
-                      reach_tol: float = 0.005) -> None:
+                      reach_tol: float = 0.005,
+                      reach_confirm: int = 3) -> None:
     """
     Run a PID loop that drives toward (or backs up from) an end wall until
     the robot stabilizes at the requested clearance.
@@ -89,6 +90,8 @@ def forward_wall_stop(bot: HamBot,
     # filtered derivative (low-pass)
     prev_filtered_derivative = None
     settle_start = None
+    # counter used by 'reach' stop mode to confirm consecutive in-tolerance readings
+    reach_count = 0
     start_time = time.time()
 
     print("Starting PID wall-stop controller")
@@ -155,9 +158,19 @@ def forward_wall_stop(bot: HamBot,
 
             min_effort_applied = False
             if abs(cmd) < min_effort_rpm:
-                if abs(error) <= settle_band_m:
-                    cmd = 0.0
+                # In 'settle' mode we may zero small commands when already within the settle band.
+                # In 'reach' mode we do NOT zero small commands here because we want the robot to
+                # continue moving until it reaches the precise target (reach_tol). Instead always
+                # apply the minimum effort to overcome stiction so the robot can close the final gap.
+                if stop_mode == "settle":
+                    if abs(error) <= settle_band_m:
+                        cmd = 0.0
+                    else:
+                        direction = cmd if cmd != 0.0 else error
+                        cmd = math.copysign(min_effort_rpm, direction)
+                        min_effort_applied = True
                 else:
+                    # default/other modes (including 'reach'): always apply minimum effort
                     direction = cmd if cmd != 0.0 else error
                     cmd = math.copysign(min_effort_rpm, direction)
                     min_effort_applied = True
@@ -193,9 +206,14 @@ def forward_wall_stop(bot: HamBot,
                 else:
                     settle_start = None
             elif stop_mode == "reach":
-                # stop as soon as the (filtered) measurement is within reach_tol of target
+                # require several consecutive measurements within reach_tol to avoid false triggers
                 if abs(error) <= reach_tol:
-                    print(f"Reached target (|err|<={reach_tol}); stopping motors")
+                    reach_count += 1
+                else:
+                    reach_count = 0
+
+                if reach_count >= max(1, int(reach_confirm)):
+                    print(f"Reached target (|err|<={reach_tol}) for {reach_count} loops; stopping motors")
                     break
             else:
                 # unknown stop mode: default to settle behavior
@@ -254,6 +272,8 @@ def main() -> None:
                         help="How to decide when to stop: 'settle' waits in-band; 'reach' stops when within reach-tol")
     parser.add_argument("--reach-tol", type=float, default=0.005,
                         help="Tolerance [m] for 'reach' stop mode (default 0.005 m)")
+    parser.add_argument("--reach-confirm", type=int, default=3,
+                        help="Number of consecutive loops within reach-tol required to confirm reach (default 3)")
 
     args = parser.parse_args()
 
@@ -274,7 +294,8 @@ def main() -> None:
                           meas_alpha=args.meas_alpha,
                           deriv_alpha=args.deriv_alpha,
                           stop_mode=args.stop_mode,
-                          reach_tol=args.reach_tol)
+                          reach_tol=args.reach_tol,
+                          reach_confirm=args.reach_confirm)
     except KeyboardInterrupt:
         print("\nInterrupted; stopping motors")
     finally:
