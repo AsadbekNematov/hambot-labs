@@ -129,7 +129,10 @@ def window_min(range_image: Iterable[float], start_idx: int, end_idx: int) -> fl
     ignored, which mirrors the behaviour in Lab 1.
     """
     samples: List[float] = []
-    scan = list(range_image)
+    try:
+        scan = list(range_image)
+    except TypeError:
+        return MAX_RANGE
     total = len(scan)
     if total == 0:
         return MAX_RANGE
@@ -186,6 +189,70 @@ def mix_speeds(forward_rpm: float, omega_rpm: float) -> Tuple[float, float]:
     left_cmd = sat_rpm(forward_rpm - omega_rpm)
     right_cmd = sat_rpm(forward_rpm + omega_rpm)
     return left_cmd, right_cmd
+
+
+def supervisor_step(bot: HamBot, dt: float) -> int:
+    """
+    Advance the robot simulation or hardware loop by ``dt`` seconds.
+
+    The HamBot simulator exposes ``experiment_supervisor.step`` while the physical
+    platform simply requires a timed delay. Returning 0 keeps the loop running in
+    hardware mode; simulation mirrors Webots by propagating the supervisor result.
+    """
+    if hasattr(bot, "experiment_supervisor"):
+        return bot.experiment_supervisor.step(dt)  # type: ignore[attr-defined]
+
+    time.sleep(dt)
+    return 0
+
+
+def get_range_image(bot: HamBot) -> Iterable[float]:
+    """Fetch the latest lidar scan, supporting both simulator and hardware APIs."""
+    if hasattr(bot, "get_lidar_range_image"):
+        return bot.get_lidar_range_image()  # type: ignore[attr-defined]
+    return bot.get_range_image()
+
+
+def get_heading_deg(bot: HamBot) -> float:
+    """Return the robot's compass bearing in degrees."""
+    if hasattr(bot, "get_compass_reading"):
+        return bot.get_compass_reading()  # type: ignore[attr-defined]
+    return bot.get_heading()
+
+
+def set_wheel_rpms(bot: HamBot, left_rpm: float, right_rpm: float) -> None:
+    """Send wheel RPMs using whichever HamBot motor interface is available."""
+    if hasattr(bot, "set_left_motor_velocity"):
+        bot.set_left_motor_velocity(left_rpm)  # type: ignore[attr-defined]
+        bot.set_right_motor_velocity(right_rpm)  # type: ignore[attr-defined]
+        return
+
+    if hasattr(bot, "set_left_motor_speed"):
+        bot.set_left_motor_speed(left_rpm)  # type: ignore[attr-defined]
+        bot.set_right_motor_speed(right_rpm)  # type: ignore[attr-defined]
+        return
+
+    raise AttributeError("HamBot instance lacks motor velocity or speed controls.")
+
+
+def stop_robot(bot: HamBot) -> None:
+    """Attempt to halt the robot cleanly regardless of interface differences."""
+    if hasattr(bot, "stop"):
+        try:
+            bot.stop()  # type: ignore[attr-defined]
+            return
+        except Exception:
+            pass
+
+    if hasattr(bot, "stop_motors"):
+        bot.stop_motors()  # type: ignore[attr-defined]
+        return
+
+    # Fallback to explicit zero commands.
+    try:
+        set_wheel_rpms(bot, 0.0, 0.0)
+    except AttributeError:
+        pass
 
 
 def nonblocking_keypress() -> Optional[str]:
@@ -317,7 +384,7 @@ def main() -> None:
     print_follow_banner(follow_side)
 
     try:
-        while bot.experiment_supervisor.step(DT_SEC) != -1:
+        while supervisor_step(bot, DT_SEC) != -1:
             key = nonblocking_keypress()
             if key:
                 lowered = key.lower()
@@ -332,9 +399,9 @@ def main() -> None:
                     omega_prev = 0.0
                     print_follow_banner(follow_side)
 
-            ranges = bot.get_lidar_range_image()
+            ranges = get_range_image(bot)
             front, left, right, side_fwd = read_probes(ranges, follow_side)
-            bearing = normalize_deg(bot.get_compass_reading())
+            bearing = normalize_deg(get_heading_deg(bot))
 
             side_distance = left if follow_side == "Left" else right
             opposite_side = right if follow_side == "Left" else left
@@ -370,8 +437,7 @@ def main() -> None:
                     omega = (1.0 - OMEGA_ALPHA) * omega_prev + OMEGA_ALPHA * pid_output
                     cmd_left, cmd_right = mix_speeds(BASE_FWD_RPM, omega)
 
-                    bot.set_left_motor_velocity(cmd_left)
-                    bot.set_right_motor_velocity(cmd_right)
+                    set_wheel_rpms(bot, cmd_left, cmd_right)
 
                     omega_prev = omega
                     reported_omega = omega
@@ -383,8 +449,7 @@ def main() -> None:
 
                 cmd_left = sat_rpm(-omega_cmd)
                 cmd_right = sat_rpm(omega_cmd)
-                bot.set_left_motor_velocity(cmd_left)
-                bot.set_right_motor_velocity(cmd_right)
+                set_wheel_rpms(bot, cmd_left, cmd_right)
 
                 reported_omega = omega_cmd
                 mode_label = state.name
@@ -409,11 +474,9 @@ def main() -> None:
         print("\n[Task2] Interrupted by user.")
     finally:
         try:
-            bot.stop()
-        except AttributeError:
-            # Earlier SDKs lack an explicit stop helper; set motors to zero.
-            bot.set_left_motor_velocity(0.0)
-            bot.set_right_motor_velocity(0.0)
+            stop_robot(bot)
+        except Exception:
+            pass
 
         if raw_mode_enabled and term_settings is not None and stdin_fd is not None:
             import termios
