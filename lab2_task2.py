@@ -137,8 +137,18 @@ def window_min(range_image: Iterable[float], start_idx: int, end_idx: int) -> fl
     while True:
         wrapped_idx = idx % total
         reading = scan[wrapped_idx]
-        if reading is not None and reading > 0.0:
-            samples.append(min(reading, MAX_RANGE))
+        if reading is None or reading <= 0.0:
+            if idx == end_idx:
+                break
+            idx += 1
+            continue
+
+        reading_m = float(reading)
+        if reading_m > MAX_RANGE * 2.0:
+            # Hardware returns millimetres; convert to metres when magnitudes imply so.
+            reading_m = reading_m / 1000.0
+
+        samples.append(min(reading_m, MAX_RANGE))
         if idx == end_idx:
             break
         idx += 1
