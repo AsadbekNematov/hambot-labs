@@ -1,9 +1,11 @@
 """
-HamBot Lab 2 Task 2 controller implementing left-wall following behaviour.
+HamBot Lab 2 Task 2 controller tuned for tight left-wall following.
 
 The script keeps everything in a single file, exposes the full wall-following
-logic, and remains easy to extend with future runtime mode switching. All
-control remains fully compatible with the physical HamBot API.
+logic, and remains easy to extend with runtime side toggles. For now the turn
+states are disabled so the robot continuously steers while wrapping around
+compact obstacles (e.g., circling a portable fridge). All control remains fully
+compatible with the physical HamBot API.
 """
 
 from __future__ import annotations
@@ -36,29 +38,36 @@ MAX_RANGE: float = 4.0
 # ---------------------------------------------------------------------------
 # Control targets and motion limits
 # ---------------------------------------------------------------------------
-SIDE_TARGET_M: float = 0.28
-BASE_FWD_RPM: float = 16.0
+SIDE_TARGET_M: float = 0.22
+BASE_FWD_RPM: float = 14.0
 MAX_RPM: float = 35.0
 MIN_EFFORT_RPM: float = 6.0
+
+# ---------------------------------------------------------------------------
+# Additional tuning for curvature and frontal avoidance
+# ---------------------------------------------------------------------------
+CORNER_WRAP_GAIN: float = 0.9
+FRONT_REPULSE_GAIN: float = 6.0
+ENABLE_TURN_STATES: bool = False
 
 
 # ---------------------------------------------------------------------------
 # Detection thresholds
 # ---------------------------------------------------------------------------
-FRONT_TH: float = 0.40
+FRONT_TH: float = 0.32
 SIDE_TH: float = 0.26
 LOOKAHEAD_TH: float = 0.70
-GAP: float = 0.12
+GAP: float = 0.16
 
 
 # ---------------------------------------------------------------------------
 # Gains, smoothing, and turn controller parameters
 # ---------------------------------------------------------------------------
-KP: float = 3.0
-KI: float = 0.10
-KD: float = 0.50
+KP: float = 3.2
+KI: float = 0.12
+KD: float = 0.45
 I_CLAMP: float = 0.5
-OMEGA_ALPHA: float = 0.2
+OMEGA_ALPHA: float = 0.35
 
 ROT_KP: float = 0.5
 ROT_EPS_DEG: float = 4.0
@@ -352,6 +361,7 @@ def main() -> None:
     omega_prev = 0.0
     last_debug = 0.0
     lidar_ready = False
+    turn_states_enabled = ENABLE_TURN_STATES
 
     print_follow_banner(follow_side)
 
@@ -381,7 +391,9 @@ def main() -> None:
             side_error: Optional[float] = None
 
             if state == RobotState.FOLLOW:
-                if front < FRONT_TH:
+                front_blocked = front < FRONT_TH
+
+                if turn_states_enabled and front_blocked:
                     if dead_end_condition(front, side_fwd, opposite_side):
                         target_bearing = normalize_deg(
                             bearing + 180.0 * turn_sign(follow_side)
@@ -411,8 +423,12 @@ def main() -> None:
                     pid_output *= turn_sign(follow_side)
 
                     if side_distance > SIDE_TARGET_M + GAP and side_fwd > LOOKAHEAD_TH:
-                        corner_bias = 0.25 * turn_sign(follow_side)
+                        corner_bias = CORNER_WRAP_GAIN * turn_sign(follow_side)
                         pid_output += corner_bias
+
+                    if not turn_states_enabled and front_blocked:
+                        front_bias = FRONT_REPULSE_GAIN * (FRONT_TH - front)
+                        pid_output += front_bias * turn_sign(follow_side)
 
                     omega = (1.0 - OMEGA_ALPHA) * omega_prev + OMEGA_ALPHA * pid_output
                     cmd_left, cmd_right = mix_speeds(BASE_FWD_RPM, omega)
@@ -423,7 +439,7 @@ def main() -> None:
                     reported_omega = omega
                     mode_label = state.name
 
-            if state in (RobotState.TURN_90, RobotState.TURN_180):
+            if turn_states_enabled and state in (RobotState.TURN_90, RobotState.TURN_180):
                 target = target_bearing if target_bearing is not None else bearing
                 omega_cmd, done = rotation_PID(bearing, target)
 
