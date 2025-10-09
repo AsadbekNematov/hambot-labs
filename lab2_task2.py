@@ -14,7 +14,7 @@ import sys
 import time
 from dataclasses import dataclass
 from enum import Enum, auto
-from typing import Iterable, List, Optional, Tuple
+from typing import Iterable, Optional, Tuple
 
 # Allow running the controller directly from the repository root without
 # modifying PYTHONPATH externally.
@@ -116,49 +116,51 @@ def smallest_angle_deg(angle_deg: float) -> float:
     return wrapped
 
 
-def window_min(range_image: Iterable[float], start_idx: int, end_idx: int) -> float:
+def window_min(range_image: Iterable[float], start_idx: int, end_idx: int) -> Tuple[float, int]:
     """
     Compute the minimum distance within a lidar window while clamping noise.
 
     Distances greater than ``MAX_RANGE`` are capped so that missing walls do
     not bias the minimum toward infinity. Invalid or non-positive samples are
-    ignored, which mirrors the behaviour in Lab 1.
+    ignored. The function also reports how many valid samples contributed so
+    the caller can detect whether the reading is trustworthy.
     """
-    samples: List[float] = []
     try:
         scan = list(range_image)
     except TypeError:
-        return MAX_RANGE
+        return MAX_RANGE, 0
     total = len(scan)
     if total == 0:
-        return MAX_RANGE
+        return MAX_RANGE, 0
 
     idx = start_idx
+    valid_count = 0
+    best = MAX_RANGE
     while True:
         wrapped_idx = idx % total
         reading = scan[wrapped_idx]
-        if reading is None or reading <= 0.0:
-            if idx == end_idx:
-                break
-            idx += 1
-            continue
+        if reading is not None and reading > 0.0:
+            reading_m = float(reading)
+            if reading_m > MAX_RANGE * 2.0:
+                # Hardware returns millimetres; convert to metres when magnitudes imply so.
+                reading_m = reading_m / 1000.0
 
-        reading_m = float(reading)
-        if reading_m > MAX_RANGE * 2.0:
-            # Hardware returns millimetres; convert to metres when magnitudes imply so.
-            reading_m = reading_m / 1000.0
+            reading_m = min(reading_m, MAX_RANGE)
+            best = min(best, reading_m)
+            valid_count += 1
 
-        samples.append(min(reading_m, MAX_RANGE))
         if idx == end_idx:
             break
         idx += 1
 
-    if not samples:
-        return MAX_RANGE
-    return min(samples)
+    if valid_count == 0:
+        return MAX_RANGE, 0
+    return best, valid_count
 
 
-def read_probes(range_image: Iterable[float], follow_side: str) -> Tuple[float, float, float, float]:
+def read_probes(range_image: Iterable[float], follow_side: str) -> Tuple[
+    float, float, float, float, int, int, int, int
+]:
     """
     Collect the key lidar beams used for the controller.
 
@@ -166,18 +168,29 @@ def read_probes(range_image: Iterable[float], follow_side: str) -> Tuple[float, 
     matches the currently followed wall. Both left and right distances are
     provided because the dead-end heuristic needs access to the opposite wall.
     """
-    front = window_min(range_image, *FRONT_WIN)
-    left = window_min(range_image, *LEFT_WIN)
-    right = window_min(range_image, *RIGHT_WIN)
-    left_fwd = window_min(range_image, *LEFT_FWD_WIN)
-    right_fwd = window_min(range_image, *RIGHT_FWD_WIN)
+    front, front_valid = window_min(range_image, *FRONT_WIN)
+    left, left_valid = window_min(range_image, *LEFT_WIN)
+    right, right_valid = window_min(range_image, *RIGHT_WIN)
+    left_fwd, left_fwd_valid = window_min(range_image, *LEFT_FWD_WIN)
+    right_fwd, right_fwd_valid = window_min(range_image, *RIGHT_FWD_WIN)
 
     if follow_side == "Left":
         side_fwd = left_fwd
+        side_valid = left_fwd_valid
     else:
         side_fwd = right_fwd
+        side_valid = right_fwd_valid
 
-    return front, left, right, side_fwd
+    return (
+        front,
+        left,
+        right,
+        side_fwd,
+        front_valid,
+        left_valid,
+        right_valid,
+        side_valid,
+    )
 
 
 def turn_sign(follow_side: str) -> int:
@@ -338,17 +351,28 @@ def main() -> None:
     target_bearing: Optional[float] = None
     omega_prev = 0.0
     last_debug = 0.0
+    lidar_ready = False
 
     print_follow_banner(follow_side)
 
     try:
         while supervisor_step(bot, DT_SEC) != -1:
             ranges = get_range_image(bot)
-            front, left, right, side_fwd = read_probes(ranges, follow_side)
+            (
+                front,
+                left,
+                right,
+                side_fwd,
+                front_valid,
+                left_valid,
+                right_valid,
+                look_valid,
+            ) = read_probes(ranges, follow_side)
             bearing = normalize_deg(get_heading_deg(bot))
 
             side_distance = left if follow_side == "Left" else right
             opposite_side = right if follow_side == "Left" else left
+            side_samples = left_valid if follow_side == "Left" else right_valid
 
             cmd_left = 0.0
             cmd_right = 0.0
@@ -372,6 +396,15 @@ def main() -> None:
                     omega_prev = 0.0
                     mode_label = state.name
                 else:
+                    if not lidar_ready and side_samples == 0:
+                        set_wheel_rpms(bot, 0.0, 0.0)
+                        if time.time() - last_debug >= 0.5:
+                            print("[Task2] Waiting for lidar side data...")
+                            last_debug = time.time()
+                        continue
+                    elif side_samples > 0:
+                        lidar_ready = True
+
                     error = side_distance - SIDE_TARGET_M
                     side_error = error
                     pid_output = side_pid.update(error, DT_SEC)
@@ -411,10 +444,13 @@ def main() -> None:
             now = time.time()
             if now - last_debug >= 0.2:
                 side_error_str = f"{side_error:+0.2f}m" if side_error is not None else "n/a"
+                side_sample_str = (
+                    f"{side_samples} side samples, {look_valid} look samples"
+                )
                 print(
                     f"[Task2] mode={mode_label:<7} front={front:0.2f}m "
                     f"left={left:0.2f}m right={right:0.2f}m look={side_fwd:0.2f}m "
-                    f"err={side_error_str} ω={reported_omega:+0.2f} "
+                    f"err={side_error_str} ({side_sample_str}) ω={reported_omega:+0.2f} "
                     f"rpmL={cmd_left:0.1f} rpmR={cmd_right:0.1f} bearing={bearing:0.1f}°"
                 )
                 last_debug = now
