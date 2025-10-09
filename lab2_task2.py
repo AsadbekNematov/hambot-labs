@@ -1,19 +1,15 @@
 """
-HamBot Lab 2 Task 2 controller implementing keyboard-switchable wall following.
+HamBot Lab 2 Task 2 controller implementing left-wall following behaviour.
 
-The script keeps everything in a single file, exposes a clean command-line
-interface, and maintains readability with descriptive helpers, docstrings, and
-inline commentary. The behaviour matches the specification provided for
-Option C: runtime toggling between left and right wall following while also
-accepting an initial side through ``--side``.
+The script keeps everything in a single file, exposes the full wall-following
+logic, and remains easy to extend with future runtime mode switching. All
+control remains fully compatible with the physical HamBot API.
 """
 
 from __future__ import annotations
 
-import argparse
 import math
 import os
-import select
 import sys
 import time
 from dataclasses import dataclass
@@ -255,26 +251,6 @@ def stop_robot(bot: HamBot) -> None:
         pass
 
 
-def nonblocking_keypress() -> Optional[str]:
-    """
-    Poll stdin for a single character without blocking the control loop.
-
-    The caller is responsible for switching the terminal into cbreak mode so
-    that characters become available immediately.
-    """
-    if not sys.stdin.isatty():
-        return None
-
-    readable, _, _ = select.select([sys.stdin], [], [], 0.0)
-    if not readable:
-        return None
-
-    data = sys.stdin.read(1)
-    if data:
-        return data
-    return None
-
-
 @dataclass
 class IncrementalPID:
     """
@@ -344,17 +320,7 @@ def print_follow_banner(follow_side: str) -> None:
 
 def main() -> None:
     """Entry point that wires together parsing, state machine, and control."""
-    parser = argparse.ArgumentParser(
-        description="HamBot Lab 2 Task 2 wall follower with live side toggles."
-    )
-    parser.add_argument(
-        "--side",
-        choices=("Left", "Right"),
-        default="Left",
-        help="Initial wall side to follow (default: Left).",
-    )
-    args = parser.parse_args()
-    follow_side = args.side
+    follow_side = "Left"
 
     bot = HamBot()
     side_pid = IncrementalPID(KP, KI, KD, I_CLAMP)
@@ -363,42 +329,10 @@ def main() -> None:
     omega_prev = 0.0
     last_debug = 0.0
 
-    # Prepare the terminal for instant keypress detection if possible.
-    raw_mode_enabled = False
-    term_settings = None
-    stdin_fd: Optional[int] = None
-    try:
-        if sys.stdin.isatty():
-            import termios
-            import tty
-
-            stdin_fd = sys.stdin.fileno()
-            term_settings = termios.tcgetattr(stdin_fd)
-            tty.setcbreak(stdin_fd)
-            raw_mode_enabled = True
-    except Exception:
-        # If the terminal does not support raw mode we continue gracefully.
-        raw_mode_enabled = False
-        term_settings = None
-
     print_follow_banner(follow_side)
 
     try:
         while supervisor_step(bot, DT_SEC) != -1:
-            key = nonblocking_keypress()
-            if key:
-                lowered = key.lower()
-                if lowered == "l" and follow_side != "Left":
-                    follow_side = "Left"
-                    side_pid.reset()
-                    omega_prev = 0.0
-                    print_follow_banner(follow_side)
-                elif lowered == "r" and follow_side != "Right":
-                    follow_side = "Right"
-                    side_pid.reset()
-                    omega_prev = 0.0
-                    print_follow_banner(follow_side)
-
             ranges = get_range_image(bot)
             front, left, right, side_fwd = read_probes(ranges, follow_side)
             bearing = normalize_deg(get_heading_deg(bot))
@@ -477,11 +411,6 @@ def main() -> None:
             stop_robot(bot)
         except Exception:
             pass
-
-        if raw_mode_enabled and term_settings is not None and stdin_fd is not None:
-            import termios
-
-            termios.tcsetattr(stdin_fd, termios.TCSADRAIN, term_settings)
 
 
 if __name__ == "__main__":
