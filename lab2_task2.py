@@ -1,11 +1,12 @@
 """
-HamBot Lab 2 Task 2 controller tuned for tight left-wall following.
+HamBot Lab 2 Task 2 controller tuned for tight, slow left-wall following.
 
 The script keeps everything in a single file, exposes the full wall-following
 logic, and remains easy to extend with runtime side toggles. For now the turn
 states are disabled so the robot continuously steers while wrapping around
-compact obstacles (e.g., circling a portable fridge). All control remains fully
-compatible with the physical HamBot API.
+compact obstacles (e.g., circling a portable fridge). The operating speed is
+intentionally very low so small distance errors become obvious during tuning.
+All control remains fully compatible with the physical HamBot API.
 """
 
 from __future__ import annotations
@@ -38,41 +39,51 @@ MAX_RANGE: float = 4.0
 # ---------------------------------------------------------------------------
 # Control targets and motion limits
 # ---------------------------------------------------------------------------
-SIDE_TARGET_M: float = 0.22
-BASE_FWD_RPM: float = 14.0
+SIDE_TARGET_M: float = 0.20
+BASE_FWD_RPM: float = 6.0
 MAX_RPM: float = 35.0
-MIN_EFFORT_RPM: float = 6.0
+MIN_EFFORT_RPM: float = 4.0
 
 # ---------------------------------------------------------------------------
 # Additional tuning for curvature and frontal avoidance
 # ---------------------------------------------------------------------------
-CORNER_WRAP_GAIN: float = 0.9
-FRONT_REPULSE_GAIN: float = 6.0
+CORNER_WRAP_GAIN: float = 1.2
+FRONT_REPULSE_GAIN: float = 10.0
 ENABLE_TURN_STATES: bool = False
+
+# ---------------------------------------------------------------------------
+# Strict tracking modifiers
+# ---------------------------------------------------------------------------
+STRICT_ERROR_BAND: float = 0.18
+STRICT_WRAP_ERR: float = 0.05
+MIN_FWD_FACTOR: float = 0.05
+FRONT_STOP_DIST: float = 0.18
+FRONT_SLOW_DIST: float = 0.45
 
 
 # ---------------------------------------------------------------------------
 # Detection thresholds
 # ---------------------------------------------------------------------------
-FRONT_TH: float = 0.32
+FRONT_TH: float = 0.35
 SIDE_TH: float = 0.26
 LOOKAHEAD_TH: float = 0.70
-GAP: float = 0.16
+GAP: float = 0.10
 
 
 # ---------------------------------------------------------------------------
 # Gains, smoothing, and turn controller parameters
 # ---------------------------------------------------------------------------
-KP: float = 3.2
-KI: float = 0.12
-KD: float = 0.45
+KP: float = 4.2
+KI: float = 0.16
+KD: float = 0.35
 I_CLAMP: float = 0.5
-OMEGA_ALPHA: float = 0.35
+OMEGA_ALPHA: float = 0.6
 
 ROT_KP: float = 0.5
 ROT_EPS_DEG: float = 4.0
 
 DT_SEC: float = 0.032
+LOG_PERIOD: float = 0.10
 
 
 class RobotState(Enum):
@@ -387,8 +398,11 @@ def main() -> None:
             cmd_left = 0.0
             cmd_right = 0.0
             reported_omega = 0.0
+            omega_unsmoothed = 0.0
             mode_label = state.name
             side_error: Optional[float] = None
+            forward_scale = 0.0
+            forward_cmd = 0.0
 
             if state == RobotState.FOLLOW:
                 front_blocked = front < FRONT_TH
@@ -422,16 +436,44 @@ def main() -> None:
                     pid_output = side_pid.update(error, DT_SEC)
                     pid_output *= turn_sign(follow_side)
 
+                    abs_error = abs(error)
+                    if STRICT_ERROR_BAND > 1e-6:
+                        forward_scale = clamp(
+                            1.0 - abs_error / STRICT_ERROR_BAND, MIN_FWD_FACTOR, 1.0
+                        )
+                    else:
+                        forward_scale = 1.0
+
+                    if front < FRONT_SLOW_DIST:
+                        denom = max(FRONT_SLOW_DIST - FRONT_STOP_DIST, 1e-3)
+                        front_scale = clamp(
+                            (front - FRONT_STOP_DIST) / denom,
+                            0.0,
+                            1.0,
+                        )
+                        forward_scale = min(forward_scale, front_scale)
+
                     if side_distance > SIDE_TARGET_M + GAP and side_fwd > LOOKAHEAD_TH:
-                        corner_bias = CORNER_WRAP_GAIN * turn_sign(follow_side)
-                        pid_output += corner_bias
+                        pid_output += CORNER_WRAP_GAIN * turn_sign(follow_side)
+
+                    if error > STRICT_WRAP_ERR:
+                        pid_output += turn_sign(follow_side) * (
+                            1.8 * (error - STRICT_WRAP_ERR) / max(STRICT_ERROR_BAND, 1e-3)
+                        )
+                    elif error < -STRICT_WRAP_ERR:
+                        pid_output -= turn_sign(follow_side) * (
+                            1.2 * (-error - STRICT_WRAP_ERR) / max(STRICT_ERROR_BAND, 1e-3)
+                        )
 
                     if not turn_states_enabled and front_blocked:
                         front_bias = FRONT_REPULSE_GAIN * (FRONT_TH - front)
                         pid_output += front_bias * turn_sign(follow_side)
 
-                    omega = (1.0 - OMEGA_ALPHA) * omega_prev + OMEGA_ALPHA * pid_output
-                    cmd_left, cmd_right = mix_speeds(BASE_FWD_RPM, omega)
+                    omega_unsmoothed = pid_output
+                    omega = (1.0 - OMEGA_ALPHA) * omega_prev + OMEGA_ALPHA * omega_unsmoothed
+
+                    forward_cmd = BASE_FWD_RPM * forward_scale
+                    cmd_left, cmd_right = mix_speeds(forward_cmd, omega)
 
                     set_wheel_rpms(bot, cmd_left, cmd_right)
 
@@ -458,7 +500,7 @@ def main() -> None:
                     mode_label = state.name
 
             now = time.time()
-            if now - last_debug >= 0.2:
+            if now - last_debug >= LOG_PERIOD:
                 side_error_str = f"{side_error:+0.2f}m" if side_error is not None else "n/a"
                 side_sample_str = (
                     f"{side_samples} side samples, {look_valid} look samples"
@@ -467,7 +509,9 @@ def main() -> None:
                     f"[Task2] mode={mode_label:<7} front={front:0.2f}m "
                     f"left={left:0.2f}m right={right:0.2f}m look={side_fwd:0.2f}m "
                     f"err={side_error_str} ({side_sample_str}) ω={reported_omega:+0.2f} "
-                    f"rpmL={cmd_left:0.1f} rpmR={cmd_right:0.1f} bearing={bearing:0.1f}°"
+                    f"ω_raw={omega_unsmoothed:+0.2f} scale={forward_scale:0.2f} "
+                    f"spd={forward_cmd:0.1f} rpmL={cmd_left:0.1f} rpmR={cmd_right:0.1f} "
+                    f"bearing={bearing:0.1f}°"
                 )
                 last_debug = now
 
