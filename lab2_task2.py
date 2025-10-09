@@ -372,9 +372,10 @@ def main() -> None:
                     omega_prev = 0.0
                     mode_label = state.name
                 else:
-                    error = SIDE_TARGET_M - side_distance
+                    error = side_distance - SIDE_TARGET_M
                     side_error = error
                     pid_output = side_pid.update(error, DT_SEC)
+                    pid_output *= turn_sign(follow_side)
 
                     if side_distance > SIDE_TARGET_M + GAP and side_fwd > LOOKAHEAD_TH:
                         corner_bias = 0.25 * turn_sign(follow_side)
