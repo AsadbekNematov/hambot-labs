@@ -354,6 +354,7 @@ def main() -> None:
             cmd_right = 0.0
             reported_omega = 0.0
             mode_label = state.name
+            side_error: Optional[float] = None
 
             if state == RobotState.FOLLOW:
                 if front < FRONT_TH:
@@ -372,6 +373,7 @@ def main() -> None:
                     mode_label = state.name
                 else:
                     error = SIDE_TARGET_M - side_distance
+                    side_error = error
                     pid_output = side_pid.update(error, DT_SEC)
 
                     if side_distance > SIDE_TARGET_M + GAP and side_fwd > LOOKAHEAD_TH:
@@ -407,10 +409,12 @@ def main() -> None:
 
             now = time.time()
             if now - last_debug >= 0.2:
+                side_error_str = f"{side_error:+0.2f}m" if side_error is not None else "n/a"
                 print(
-                    f"mode={mode_label:>7} side={side_distance:0.2f} "
-                    f"front={front:0.2f} omega={reported_omega:+0.2f} "
-                    f"vl={cmd_left:0.1f} vr={cmd_right:0.1f} bear={bearing:0.1f}"
+                    f"[Task2] mode={mode_label:<7} front={front:0.2f}m "
+                    f"left={left:0.2f}m right={right:0.2f}m look={side_fwd:0.2f}m "
+                    f"err={side_error_str} ω={reported_omega:+0.2f} "
+                    f"rpmL={cmd_left:0.1f} rpmR={cmd_right:0.1f} bearing={bearing:0.1f}°"
                 )
                 last_debug = now
 
