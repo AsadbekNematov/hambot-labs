@@ -49,7 +49,7 @@ MIN_EFFORT_RPM: float = 4.0
 # ---------------------------------------------------------------------------
 CORNER_WRAP_GAIN: float = 1.2
 FRONT_REPULSE_GAIN: float = 10.0
-ENABLE_TURN_STATES: bool = False
+ENABLE_TURN_STATES: bool = True
 
 # ---------------------------------------------------------------------------
 # Strict tracking modifiers
@@ -84,6 +84,18 @@ ROT_EPS_DEG: float = 4.0
 
 DT_SEC: float = 0.032
 LOG_PERIOD: float = 0.10
+
+# ---------------------------------------------------------------------------
+# Robot geometry and quarter-turn tuning
+# ---------------------------------------------------------------------------
+AXLE_LENGTH_M: float = 0.184
+WHEEL_RADIUS_M: float = 0.045
+TURN_ARC_INNER_RPM: float = 6.0
+TURN_ARC_OUTER_RPM: float = 22.0
+TURN_ARC_OVERSHOOT: float = 1.08
+TURN_ARC_MIN_TIME: float = 0.55
+TURN_EXIT_FRONT_CLEAR: float = 0.55
+TURN_EXIT_SIDE_ERR: float = 0.15
 
 
 class RobotState(Enum):
@@ -332,6 +344,48 @@ class IncrementalPID:
         self.prev_error = None
 
 
+@dataclass
+class ArcTurnContext:
+    """Store parameters governing a quarter-turn arc manoeuvre."""
+
+    follow_side: str
+    inner_rpm: float
+    outer_rpm: float
+    start_time: float
+    duration: float
+
+
+def rpm_to_linear(rpm: float) -> float:
+    """Convert wheel RPM to linear velocity at the wheel perimeter (m/s)."""
+    return abs(rpm) * (2.0 * math.pi * WHEEL_RADIUS_M) / 60.0
+
+
+def create_arc_turn_context(follow_side: str) -> ArcTurnContext:
+    """
+    Configure a quarter-turn arc using fixed inner/outer wheel RPMs.
+
+    Uses differential-drive kinematics to estimate the duration required to
+    sweep 90 degrees without stopping in place. The duration is slightly
+    overestimated via TURN_ARC_OVERSHOOT so the wall can be reacquired.
+    """
+    inner_rpm = TURN_ARC_INNER_RPM
+    outer_rpm = TURN_ARC_OUTER_RPM
+    v_inner = rpm_to_linear(inner_rpm)
+    v_outer = rpm_to_linear(outer_rpm)
+    omega = abs(v_outer - v_inner) / max(AXLE_LENGTH_M, 1e-6)
+    duration = (math.pi / 2.0) / max(omega, 1e-6)
+    duration *= TURN_ARC_OVERSHOOT
+    duration = max(duration, TURN_ARC_MIN_TIME)
+
+    return ArcTurnContext(
+        follow_side=follow_side,
+        inner_rpm=inner_rpm,
+        outer_rpm=outer_rpm,
+        start_time=time.time(),
+        duration=duration,
+    )
+
+
 def rotation_PID(curr_bearing: float, target_bearing: float) -> Tuple[float, bool]:
     """
     Compute a proportional spin command that steers toward ``target_bearing``.
@@ -373,6 +427,7 @@ def main() -> None:
     last_debug = 0.0
     lidar_ready = False
     turn_states_enabled = ENABLE_TURN_STATES
+    arc_ctx: Optional[ArcTurnContext] = None
 
     print_follow_banner(follow_side)
 
@@ -412,12 +467,16 @@ def main() -> None:
                         target_bearing = normalize_deg(
                             bearing + 180.0 * turn_sign(follow_side)
                         )
+                        arc_ctx = None
                         state = RobotState.TURN_180
                     else:
-                        target_bearing = normalize_deg(
-                            bearing + 90.0 * turn_sign(follow_side)
-                        )
+                        arc_ctx = create_arc_turn_context(follow_side)
+                        target_bearing = None
                         state = RobotState.TURN_90
+                        print(
+                            f"[Task2] Quarter arc turn start ({follow_side}) "
+                            f"≈ {arc_ctx.duration:.2f}s"
+                        )
                     side_pid.reset()
                     omega_prev = 0.0
                     mode_label = state.name
@@ -481,7 +540,66 @@ def main() -> None:
                     reported_omega = omega
                     mode_label = state.name
 
-            if turn_states_enabled and state in (RobotState.TURN_90, RobotState.TURN_180):
+            if turn_states_enabled and state == RobotState.TURN_90:
+                if arc_ctx is not None:
+                    if arc_ctx.follow_side == "Left":
+                        cmd_left = sat_rpm(arc_ctx.inner_rpm)
+                        cmd_right = sat_rpm(arc_ctx.outer_rpm)
+                    else:
+                        cmd_left = sat_rpm(arc_ctx.outer_rpm)
+                        cmd_right = sat_rpm(arc_ctx.inner_rpm)
+
+                    set_wheel_rpms(bot, cmd_left, cmd_right)
+
+                    reported_omega = cmd_right - cmd_left
+                    omega_unsmoothed = reported_omega
+                    forward_cmd = max(0.0, min(cmd_left, cmd_right))
+                    if BASE_FWD_RPM > 1e-6:
+                        forward_scale = clamp(forward_cmd / BASE_FWD_RPM, 0.0, 1.5)
+
+                    elapsed = time.time() - arc_ctx.start_time
+                    front_clear = front >= TURN_EXIT_FRONT_CLEAR
+                    side_error_now = side_distance - SIDE_TARGET_M
+                    side_error = side_error_now
+                    good_side = abs(side_error_now) <= TURN_EXIT_SIDE_ERR
+
+                    if (
+                        elapsed >= arc_ctx.duration
+                        or (
+                            elapsed >= TURN_ARC_MIN_TIME
+                            and front_clear
+                            and good_side
+                        )
+                    ):
+                        state = RobotState.FOLLOW
+                        arc_ctx = None
+                        target_bearing = None
+                        side_pid.reset()
+                        omega_prev = 0.0
+                        mode_label = state.name
+                else:
+                    target = target_bearing if target_bearing is not None else bearing
+                    omega_cmd, done = rotation_PID(bearing, target)
+
+                    cmd_left = sat_rpm(-omega_cmd)
+                    cmd_right = sat_rpm(omega_cmd)
+                    set_wheel_rpms(bot, cmd_left, cmd_right)
+
+                    side_error = None
+                    reported_omega = omega_cmd
+                    omega_unsmoothed = omega_cmd
+                    forward_cmd = 0.0
+                    forward_scale = 0.0
+                    mode_label = state.name
+
+                    if done and front >= FRONT_TH:
+                        state = RobotState.FOLLOW
+                        target_bearing = None
+                        side_pid.reset()
+                        omega_prev = 0.0
+                        mode_label = state.name
+
+            if turn_states_enabled and state == RobotState.TURN_180:
                 target = target_bearing if target_bearing is not None else bearing
                 omega_cmd, done = rotation_PID(bearing, target)
 
@@ -489,7 +607,11 @@ def main() -> None:
                 cmd_right = sat_rpm(omega_cmd)
                 set_wheel_rpms(bot, cmd_left, cmd_right)
 
+                side_error = None
                 reported_omega = omega_cmd
+                omega_unsmoothed = omega_cmd
+                forward_cmd = 0.0
+                forward_scale = 0.0
                 mode_label = state.name
 
                 if done and front >= FRONT_TH:
