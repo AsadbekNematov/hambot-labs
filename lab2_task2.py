@@ -226,6 +226,12 @@ def main() -> None:
 
     print("[Task2] Following left wall")
 
+    # Pre-fill lidar values to let the sensor settle before control starts.
+    warm_start_time = time.time()
+    while time.time() - warm_start_time < 2.0:
+        ranges = get_range_image(bot)
+        supervisor_step(bot, DT_SEC)
+
     try:
         while supervisor_step(bot, DT_SEC) != -1:
             ranges = get_range_image(bot)
