@@ -12,7 +12,7 @@ import math
 import os
 import sys
 import time
-from typing import Iterable, List, Tuple
+from typing import Iterable, List, Optional, Tuple
 
 # Allow running the controller directly from the repository root without
 # modifying PYTHONPATH externally.
@@ -40,9 +40,15 @@ FRONT_BLOCK_M: float = 0.27
 RIGHT_CLEAR_M: float = 0.40
 
 # Turn behaviour.
-TURN_KP: float = 0.8
-TURN_EPS_DEG: float = 4.0
-MAX_TURN_RPM: float = 25.0
+TURN_KP: float = 0.6
+TURN_FAST_RPM: float = 24.0
+TURN_SLOW_RPM: float = 12.0
+TURN_SLOW_BAND_DEG: float = 22.0
+TURN_EPS_DEG: float = 2.0
+TURN_SETTLE_TIME: float = 0.08
+TURN_TIMEOUT_SEC: float = 4.0
+
+LOG_PREFIX = "[Task2]"
 
 DT_SEC: float = 0.032
 
@@ -60,6 +66,11 @@ def sat_rpm(command_rpm: float) -> float:
     if abs(clipped) < MIN_EFFORT_RPM:
         return math.copysign(MIN_EFFORT_RPM, clipped)
     return clipped
+
+
+def log_status(stage: str, message: str) -> None:
+    """Uniform logging helper."""
+    print(f"{LOG_PREFIX}[{stage}] {message}")
 
 
 def normalize_deg(angle_deg: float) -> float:
@@ -197,26 +208,60 @@ def mix_wheel_commands(forward_rpm: float, steer_rpm: float) -> Tuple[float, flo
     return left_cmd, right_cmd
 
 
-def perform_turn(bot: HamBot, angle_deg: float) -> None:
+def perform_turn(bot: HamBot, angle_deg: float, context: str = "TURN") -> None:
     """Rotate the robot in place by ``angle_deg`` degrees (positive turns left)."""
+    if abs(angle_deg) < 1e-3:
+        return
+
+    direction = "left" if angle_deg > 0 else "right"
+    log_status(context, f"Begin in-place turn {direction} {abs(angle_deg):.0f}°")
+
     current = normalize_deg(get_heading_deg(bot))
     target = normalize_deg(current + angle_deg)
+    desired_sign = 1.0 if angle_deg >= 0.0 else -1.0
+    start_time = time.time()
+    settle_start: Optional[float] = None
+    final_error = float("nan")
 
     while True:
         heading = normalize_deg(get_heading_deg(bot))
-        error = smallest_angle_deg(target - heading)
-        if abs(error) <= TURN_EPS_DEG:
-            break
+        raw_error = smallest_angle_deg(target - heading)
+        if abs(raw_error) > 179.5:
+            error = desired_sign * abs(raw_error)
+        else:
+            error = raw_error
 
-        omega = clamp(TURN_KP * error, -MAX_TURN_RPM, MAX_TURN_RPM)
+        abs_error = abs(error)
+        final_error = error
+
+        if abs_error <= TURN_EPS_DEG:
+            if settle_start is None:
+                settle_start = time.time()
+            elif time.time() - settle_start >= TURN_SETTLE_TIME:
+                break
+        else:
+            settle_start = None
+
+        max_rpm = TURN_SLOW_RPM if abs_error < TURN_SLOW_BAND_DEG else TURN_FAST_RPM
+        omega = clamp(TURN_KP * error, -max_rpm, max_rpm)
+        if abs(omega) < MIN_EFFORT_RPM and abs_error > TURN_EPS_DEG:
+            omega = math.copysign(MIN_EFFORT_RPM, error)
+
         left_cmd = sat_rpm(-omega)
         right_cmd = sat_rpm(omega)
         set_wheel_rpms(bot, left_cmd, right_cmd)
-        step_result = supervisor_step(bot, DT_SEC)
-        if step_result == -1:
+
+        if supervisor_step(bot, DT_SEC) == -1:
+            log_status(context, "Supervisor requested shutdown during turn")
+            break
+
+        if time.time() - start_time >= TURN_TIMEOUT_SEC:
+            log_status(context, f"Timeout while turning (remaining error {error:+.1f}°)")
             break
 
     set_wheel_rpms(bot, 0.0, 0.0)
+    supervisor_step(bot, DT_SEC)
+    log_status(context, f"Turn complete; residual error {final_error:+.1f}°")
 
 
 def main() -> None:
@@ -224,13 +269,15 @@ def main() -> None:
     bot = HamBot()
     last_debug = 0.0
 
-    print("[Task2] Following left wall")
+    log_status("INIT", "Following left wall")
 
     # Pre-fill lidar values to let the sensor settle before control starts.
     warm_start_time = time.time()
-    while time.time() - warm_start_time < 2.0:
+    log_status("INIT", "Warming up lidar stream")
+    while time.time() - warm_start_time < 1.0:
         ranges = get_range_image(bot)
         supervisor_step(bot, DT_SEC)
+    log_status("INIT", "Lidar ready")
 
     try:
         while supervisor_step(bot, DT_SEC) != -1:
@@ -239,14 +286,15 @@ def main() -> None:
 
             if front_dist < FRONT_BLOCK_M:
                 turn_angle = -90.0 if right_dist > RIGHT_CLEAR_M else -180.0
-                turn_label = "right 90°" if turn_angle == -90.0 else "right 180°"
-                print(f"[Task2] Front blocked ({front_dist:0.2f}m), turning {turn_label}")
-                perform_turn(bot, turn_angle)
+                turn_label = "TURN_RIGHT_90" if turn_angle == -90.0 else "TURN_RIGHT_180"
+                log_status("BLOCKED", f"Front={front_dist:0.2f}m Right={right_dist:0.2f}m -> {turn_label}")
+                perform_turn(bot, turn_angle, context=turn_label)
 
                 # Step once more to let lidar publish a fresh scan before resuming.
                 supervisor_step(bot, DT_SEC)
                 ranges = get_range_image(bot)
                 front_dist, left_dist, right_dist = get_probe_distances(ranges)
+                log_status("FOLLOW", "Resuming wall following after turn")
                 last_debug = time.time()
                 continue
 
@@ -258,11 +306,14 @@ def main() -> None:
 
             now = time.time()
             if now - last_debug >= 0.2:
-                print(
-                    f"[Task2] front={front_dist:0.2f}m left={left_dist:0.2f}m "
-                    f"right={right_dist:0.2f}m "
-                    f"target={SIDE_TARGET_M:0.2f}m error={error:+0.2f}m "
-                    f"steer={steer:+0.2f} rpmL={cmd_left:0.1f} rpmR={cmd_right:0.1f}"
+                log_status(
+                    "FOLLOW",
+                    (
+                        f"front={front_dist:0.2f}m left={left_dist:0.2f}m "
+                        f"right={right_dist:0.2f}m target={SIDE_TARGET_M:0.2f}m "
+                        f"error={error:+0.2f}m steer={steer:+0.2f} "
+                        f"rpmL={cmd_left:0.1f} rpmR={cmd_right:0.1f}"
+                    ),
                 )
                 last_debug = now
 
