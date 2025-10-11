@@ -237,15 +237,18 @@ def main() -> None:
             ranges = get_range_image(bot)
             front_dist, left_dist, right_dist = get_probe_distances(ranges)
 
-            while front_dist < FRONT_BLOCK_M:
+            if front_dist < FRONT_BLOCK_M:
                 turn_angle = -90.0 if right_dist > RIGHT_CLEAR_M else -180.0
                 turn_label = "right 90°" if turn_angle == -90.0 else "right 180°"
                 print(f"[Task2] Front blocked ({front_dist:0.2f}m), turning {turn_label}")
                 perform_turn(bot, turn_angle)
 
+                # Step once more to let lidar publish a fresh scan before resuming.
+                supervisor_step(bot, DT_SEC)
                 ranges = get_range_image(bot)
                 front_dist, left_dist, right_dist = get_probe_distances(ranges)
                 last_debug = time.time()
+                continue
 
             error = SIDE_TARGET_M - left_dist
             steer = compute_steering(error)
