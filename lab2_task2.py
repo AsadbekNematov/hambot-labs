@@ -48,7 +48,7 @@ TURN_EPS_DEG: float = 2.0
 TURN_SETTLE_TIME: float = 0.08
 TURN_TIMEOUT_SEC: float = 4.0
 
-TURN_RIGHT_ANGLE_90: float = -85.0
+TURN_RIGHT_ANGLE_90: float = -80.0
 TURN_RIGHT_ANGLE_180: float = -170.0
 
 LOG_PREFIX = "[Task2]"
