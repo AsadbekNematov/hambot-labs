@@ -20,8 +20,10 @@ sys.path.append(os.path.join(os.path.dirname(__file__), "src"))
 from src.robot_systems.robot import HamBot  # noqa: E402 (import after sys.path)
 
 
-# Lidar sampling window for the left wall.
+# Lidar sampling windows around the robot.
+FRONT_WIN: Tuple[int, int] = (175, 185)
 LEFT_WIN: Tuple[int, int] = (90, 115)
+RIGHT_WIN: Tuple[int, int] = (245, 270)
 MAX_RANGE: float = 4.0
 
 # Simplified motion parameters.
@@ -32,6 +34,15 @@ STEER_KP: float = 20.0
 MAX_STEER_RPM: float = 12.0
 MAX_RPM: float = 35.0
 MIN_EFFORT_RPM: float = 6.0
+
+# Obstacle handling thresholds.
+FRONT_BLOCK_M: float = 0.27
+RIGHT_CLEAR_M: float = 0.40
+
+# Turn behaviour.
+TURN_KP: float = 0.8
+TURN_EPS_DEG: float = 4.0
+MAX_TURN_RPM: float = 25.0
 
 DT_SEC: float = 0.032
 
@@ -49,6 +60,19 @@ def sat_rpm(command_rpm: float) -> float:
     if abs(clipped) < MIN_EFFORT_RPM:
         return math.copysign(MIN_EFFORT_RPM, clipped)
     return clipped
+
+
+def normalize_deg(angle_deg: float) -> float:
+    """Wrap an absolute heading to [0, 360)."""
+    return angle_deg % 360.0
+
+
+def smallest_angle_deg(angle_deg: float) -> float:
+    """Return the signed shortest rotation in degrees."""
+    wrapped = (angle_deg + 180.0) % 360.0 - 180.0
+    if wrapped <= -180.0:
+        wrapped += 360.0
+    return wrapped
 
 
 def window_min(range_image: Iterable[float], start_idx: int, end_idx: int) -> float:
@@ -89,9 +113,12 @@ def window_min(range_image: Iterable[float], start_idx: int, end_idx: int) -> fl
     return min(samples)
 
 
-def get_left_distance(range_image: Iterable[float]) -> float:
-    """Extract the current left wall distance from the scan."""
-    return window_min(range_image, *LEFT_WIN)
+def get_probe_distances(range_image: Iterable[float]) -> Tuple[float, float, float]:
+    """Extract front, left, and right wall distances from the scan."""
+    front = window_min(range_image, *FRONT_WIN)
+    left = window_min(range_image, *LEFT_WIN)
+    right = window_min(range_image, *RIGHT_WIN)
+    return front, left, right
 
 
 def supervisor_step(bot: HamBot, dt: float) -> int:
@@ -108,6 +135,13 @@ def get_range_image(bot: HamBot) -> Iterable[float]:
     if hasattr(bot, "get_lidar_range_image"):
         return bot.get_lidar_range_image()  # type: ignore[attr-defined]
     return bot.get_range_image()
+
+
+def get_heading_deg(bot: HamBot) -> float:
+    """Return the robot heading in degrees."""
+    if hasattr(bot, "get_compass_reading"):
+        return bot.get_compass_reading()  # type: ignore[attr-defined]
+    return bot.get_heading()
 
 
 def set_wheel_rpms(bot: HamBot, left_rpm: float, right_rpm: float) -> None:
@@ -163,6 +197,28 @@ def mix_wheel_commands(forward_rpm: float, steer_rpm: float) -> Tuple[float, flo
     return left_cmd, right_cmd
 
 
+def perform_turn(bot: HamBot, angle_deg: float) -> None:
+    """Rotate the robot in place by ``angle_deg`` degrees (positive = left)."""
+    current = normalize_deg(get_heading_deg(bot))
+    target = normalize_deg(current + angle_deg)
+
+    while True:
+        heading = normalize_deg(get_heading_deg(bot))
+        error = smallest_angle_deg(target - heading)
+        if abs(error) <= TURN_EPS_DEG:
+            break
+
+        omega = clamp(TURN_KP * error, -MAX_TURN_RPM, MAX_TURN_RPM)
+        left_cmd = sat_rpm(omega)
+        right_cmd = sat_rpm(-omega)
+        set_wheel_rpms(bot, left_cmd, right_cmd)
+        step_result = supervisor_step(bot, DT_SEC)
+        if step_result == -1:
+            break
+
+    set_wheel_rpms(bot, 0.0, 0.0)
+
+
 def main() -> None:
     """Simple left-wall following loop."""
     bot = HamBot()
@@ -173,7 +229,15 @@ def main() -> None:
     try:
         while supervisor_step(bot, DT_SEC) != -1:
             ranges = get_range_image(bot)
-            left_dist = get_left_distance(ranges)
+            front_dist, left_dist, right_dist = get_probe_distances(ranges)
+
+            if front_dist < FRONT_BLOCK_M:
+                turn_angle = -90.0 if right_dist > RIGHT_CLEAR_M else -180.0
+                turn_label = "right 90°" if turn_angle == -90.0 else "right 180°"
+                print(f"[Task2] Front blocked ({front_dist:0.2f}m), turning {turn_label}")
+                perform_turn(bot, turn_angle)
+                last_debug = time.time()
+                continue
 
             error = SIDE_TARGET_M - left_dist
             steer = compute_steering(error)
@@ -184,7 +248,8 @@ def main() -> None:
             now = time.time()
             if now - last_debug >= 0.2:
                 print(
-                    f"[Task2] left={left_dist:0.2f}m "
+                    f"[Task2] front={front_dist:0.2f}m left={left_dist:0.2f}m "
+                    f"right={right_dist:0.2f}m "
                     f"target={SIDE_TARGET_M:0.2f}m error={error:+0.2f}m "
                     f"steer={steer:+0.2f} rpmL={cmd_left:0.1f} rpmR={cmd_right:0.1f}"
                 )
