@@ -198,7 +198,7 @@ def mix_wheel_commands(forward_rpm: float, steer_rpm: float) -> Tuple[float, flo
 
 
 def perform_turn(bot: HamBot, angle_deg: float) -> None:
-    """Rotate the robot in place by ``angle_deg`` degrees (positive = left)."""
+    """Rotate the robot in place by ``angle_deg`` degrees (positive turns left)."""
     current = normalize_deg(get_heading_deg(bot))
     target = normalize_deg(current + angle_deg)
 
@@ -209,8 +209,8 @@ def perform_turn(bot: HamBot, angle_deg: float) -> None:
             break
 
         omega = clamp(TURN_KP * error, -MAX_TURN_RPM, MAX_TURN_RPM)
-        left_cmd = sat_rpm(omega)
-        right_cmd = sat_rpm(-omega)
+        left_cmd = sat_rpm(-omega)
+        right_cmd = sat_rpm(omega)
         set_wheel_rpms(bot, left_cmd, right_cmd)
         step_result = supervisor_step(bot, DT_SEC)
         if step_result == -1:
@@ -231,13 +231,15 @@ def main() -> None:
             ranges = get_range_image(bot)
             front_dist, left_dist, right_dist = get_probe_distances(ranges)
 
-            if front_dist < FRONT_BLOCK_M:
+            while front_dist < FRONT_BLOCK_M:
                 turn_angle = -90.0 if right_dist > RIGHT_CLEAR_M else -180.0
                 turn_label = "right 90°" if turn_angle == -90.0 else "right 180°"
                 print(f"[Task2] Front blocked ({front_dist:0.2f}m), turning {turn_label}")
                 perform_turn(bot, turn_angle)
+
+                ranges = get_range_image(bot)
+                front_dist, left_dist, right_dist = get_probe_distances(ranges)
                 last_debug = time.time()
-                continue
 
             error = SIDE_TARGET_M - left_dist
             steer = compute_steering(error)
