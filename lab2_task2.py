@@ -12,7 +12,7 @@ import math
 import os
 import sys
 import time
-from typing import Iterable, Optional, Tuple
+from typing import Iterable, Optional, Sequence, Tuple
 
 # Allow running the controller directly from the repository root without
 # modifying PYTHONPATH externally.
@@ -60,6 +60,7 @@ MAX_SENSOR_ATTEMPTS: int = 6
 LOG_PREFIX = "[Task2]"
 
 DT_SEC: float = 0.032
+LIDAR_SAMPLE_TTL_SEC: float = 0.35
 
 
 def clamp(value: float, lo: float, hi: float) -> float:
@@ -95,19 +96,71 @@ def smallest_angle_deg(angle_deg: float) -> float:
     return wrapped
 
 
-def window_min(range_image: Iterable[float], start_idx: int, end_idx: int) -> Tuple[float, bool]:
+def fetch_lidar_scan(bot: HamBot) -> Tuple[Sequence[float], Optional[Sequence[float]]]:
+    """
+    Fetch the current lidar scan and optional per-angle timestamps, if available.
+    """
+    if hasattr(bot, "get_range_image_with_timestamps"):
+        scan, timestamps = bot.get_range_image_with_timestamps()  # type: ignore[attr-defined]
+    else:
+        scan = get_range_image(bot)
+        timestamps = None
+
+    if scan == -1:
+        return [], None
+
+    try:
+        scan_list = list(scan)
+    except TypeError:
+        scan_list = [float(scan)]
+
+    if timestamps is None:
+        stamp_list: Optional[list[float]] = None
+    else:
+        try:
+            stamp_list = list(timestamps)
+        except TypeError:
+            stamp_list = None
+
+    return scan_list, stamp_list
+
+
+def window_min(
+    range_image: Iterable[float],
+    start_idx: int,
+    end_idx: int,
+    sample_timestamps: Optional[Iterable[float]] = None,
+) -> Tuple[float, bool]:
     """
     Return the minimum distance inside a lidar window and flag whether anything was usable.
     """
-    try:
-        scan = list(range_image)
-    except TypeError:
-        return MAX_RANGE, False
+    if isinstance(range_image, list):
+        scan = range_image
+    else:
+        try:
+            scan = list(range_image)
+        except TypeError:
+            return MAX_RANGE, False
 
     total = len(scan)
     if total == 0:
         return MAX_RANGE, False
 
+    timestamps: Optional[list[float]]
+    if sample_timestamps is None:
+        timestamps = None
+    else:
+        if isinstance(sample_timestamps, list):
+            timestamps = sample_timestamps
+        else:
+            try:
+                timestamps = list(sample_timestamps)
+                if len(timestamps) != total:
+                    timestamps = None
+            except TypeError:
+                timestamps = None
+
+    now = time.monotonic()
     best = MAX_RANGE
     had_sample = False
     idx = start_idx
@@ -125,6 +178,14 @@ def window_min(range_image: Iterable[float], start_idx: int, end_idx: int) -> Tu
             reading_m /= 1000.0
         reading_m = min(reading_m, MAX_RANGE)
 
+        if timestamps is not None:
+            sample_time = timestamps[idx % total]
+            if sample_time <= 0.0 or now - sample_time > LIDAR_SAMPLE_TTL_SEC:
+                if idx == end_idx:
+                    break
+                idx += 1
+                continue
+
         if reading_m < best:
             best = reading_m
         had_sample = True
@@ -137,11 +198,14 @@ def window_min(range_image: Iterable[float], start_idx: int, end_idx: int) -> Tu
     return best, True
 
 
-def get_probe_distances(range_image: Iterable[float]) -> Tuple[Tuple[float, float, float], Tuple[bool, bool, bool]]:
+def get_probe_distances(
+    range_image: Iterable[float],
+    sample_timestamps: Optional[Iterable[float]] = None,
+) -> Tuple[Tuple[float, float, float], Tuple[bool, bool, bool]]:
     """Extract front, left, and right wall distances and validity flags from the scan."""
-    front, front_ok = window_min(range_image, *FRONT_WIN)
-    left, left_ok = window_min(range_image, *LEFT_WIN)
-    right, right_ok = window_min(range_image, *RIGHT_WIN)
+    front, front_ok = window_min(range_image, *FRONT_WIN, sample_timestamps=sample_timestamps)
+    left, left_ok = window_min(range_image, *LEFT_WIN, sample_timestamps=sample_timestamps)
+    right, right_ok = window_min(range_image, *RIGHT_WIN, sample_timestamps=sample_timestamps)
     return (front, left, right), (front_ok, left_ok, right_ok)
 
 
@@ -149,11 +213,13 @@ def poll_distances(bot: HamBot, attempts: int = MAX_SENSOR_ATTEMPTS) -> Optional
     """
     Attempt to fetch a fresh set of wall distances, retrying if all probes read MAX_RANGE.
 
-    Returns None when no valid measurements arrive within ``attempts`` retries.
+        Returns None when no valid measurements arrive within ``attempts`` retries.
     """
     for attempt in range(1, attempts + 1):
-        ranges = get_range_image(bot)
-        (front, left, right), (front_ok, left_ok, right_ok) = get_probe_distances(ranges)
+        ranges, timestamps = fetch_lidar_scan(bot)
+        (front, left, right), (front_ok, left_ok, right_ok) = get_probe_distances(
+            ranges, sample_timestamps=timestamps
+        )
         if front_ok or left_ok or right_ok:
             return front, left, right
 
@@ -321,7 +387,7 @@ def main() -> None:
     warm_start_time = time.time()
     log_status("INIT", "Warming up lidar stream")
     while time.time() - warm_start_time < 1.0:
-        _ = get_range_image(bot)
+        _ = fetch_lidar_scan(bot)
         supervisor_step(bot, DT_SEC)
     log_status("INIT", "Lidar ready")
 

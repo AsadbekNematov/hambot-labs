@@ -18,6 +18,7 @@ class Lidar:
         self.lidar = RPLidar(None, port_name, timeout=timeout)
         self.lidar.start_motor()
         self.scan_data = [self.INVALID_READING] * 360  # Initialize scan data with 360 degrees
+        self.scan_timestamps = [0.0] * 360
         self.lock = threading.Lock()
         self.running = True
         self.scan_thread = threading.Thread(target=self._scan)
@@ -36,12 +37,15 @@ class Lidar:
                 for scan in self.lidar.iter_scans():
                     with self.lock:
                         for _, angle, distance in scan:
+                            stamp = time.monotonic()
                             # Convert angle to match the required orientation (0° at back, 180° at front)
                             adjusted_angle = (angle + 180) % 360
+                            idx = min(359, floor(adjusted_angle))
                             if distance > 0:  # Only update if the distance is valid
-                                self.scan_data[min(359, floor(adjusted_angle))] = distance
+                                self.scan_data[idx] = distance
                             else:
-                                self.scan_data[min(359, floor(adjusted_angle))] = -1
+                                self.scan_data[idx] = -1
+                            self.scan_timestamps[idx] = stamp
                     if not self.running:
                         break
                 time.sleep(self.lidar_sleep)  # Short delay to prevent high CPU usage
@@ -63,6 +67,17 @@ class Lidar:
         """
         with self.lock:
             return self.scan_data.copy()
+
+    def get_current_scan_with_timestamps(self):
+        """
+        Get the current scan data along with per-angle update timestamps.
+
+        Returns:
+            tuple[list, list]: A copy of the current scan data and a copy of the
+                               timestamps (in monotonic seconds) for each angle.
+        """
+        with self.lock:
+            return self.scan_data.copy(), self.scan_timestamps.copy()
 
     def stop_lidar(self):
         """

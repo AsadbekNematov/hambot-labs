@@ -63,6 +63,24 @@ class HamBot:
             print("Lidar is not enabled.")
             return -1
 
+    def get_range_image_with_timestamps(self):
+        """
+        Retrieve the current range image together with per-angle update timestamps.
+
+        Returns:
+            tuple: (scan, timestamps) where scan is the distance list and timestamps
+                   are monotonic seconds indicating when each sample was last refreshed.
+        """
+        if self.lidar is not None and hasattr(self.lidar, "get_current_scan_with_timestamps"):
+            return self.lidar.get_current_scan_with_timestamps()
+
+        scan = self.get_range_image()
+        if not isinstance(scan, list):
+            return scan, None
+
+        stamp = time.monotonic()
+        return scan, [stamp] * len(scan)
+
     def get_heading(self, fresh_within=0.5, blocking=False, wait_timeout=0.3):
         return self.imu.get_heading(fresh_within=fresh_within,
                                     blocking=blocking,
