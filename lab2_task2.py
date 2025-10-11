@@ -29,14 +29,14 @@ MAX_RANGE: float = 4.0
 # Simplified motion parameters.
 SIDE_TARGET_M: float = 0.22
 SIDE_DEADBAND_M: float = 0.005
-BASE_FWD_RPM: float = 16.0
+BASE_FWD_RPM: float = 12.0
 STEER_KP: float = 20.0
 MAX_STEER_RPM: float = 12.0
 MAX_RPM: float = 35.0
 MIN_EFFORT_RPM: float = 6.0
 
 # Obstacle handling thresholds.
-FRONT_BLOCK_M: float = 0.26
+FRONT_BLOCK_M: float = 0.25
 RIGHT_CLEAR_M: float = 0.40
 
 # Turn behaviour.
@@ -48,8 +48,10 @@ TURN_EPS_DEG: float = 2.0
 TURN_SETTLE_TIME: float = 0.08
 TURN_TIMEOUT_SEC: float = 4.0
 
-TURN_RIGHT_ANGLE_90: float = -80.0
+TURN_RIGHT_ANGLE_90: float = -85.0
 TURN_RIGHT_ANGLE_180: float = -170.0
+
+MAX_SENSOR_ATTEMPTS: int = 6
 
 LOG_PREFIX = "[Task2]"
 
@@ -133,6 +135,24 @@ def get_probe_distances(range_image: Iterable[float]) -> Tuple[float, float, flo
     left = window_min(range_image, *LEFT_WIN)
     right = window_min(range_image, *RIGHT_WIN)
     return front, left, right
+
+
+def poll_distances(bot: HamBot, attempts: int = MAX_SENSOR_ATTEMPTS) -> Optional[Tuple[float, float, float]]:
+    """
+    Attempt to fetch a fresh set of wall distances, retrying if all probes read MAX_RANGE.
+
+    Returns None when no valid measurements arrive within ``attempts`` retries.
+    """
+    for attempt in range(1, attempts + 1):
+        ranges = get_range_image(bot)
+        front, left, right = get_probe_distances(ranges)
+        if any(dist < MAX_RANGE for dist in (front, left, right)):
+            return front, left, right
+
+        log_status("LIDAR", f"No valid scan (attempt {attempt}/{attempts}); waiting...")
+        if supervisor_step(bot, DT_SEC) == -1:
+            break
+    return None
 
 
 def supervisor_step(bot: HamBot, dt: float) -> int:
@@ -278,14 +298,32 @@ def main() -> None:
     warm_start_time = time.time()
     log_status("INIT", "Warming up lidar stream")
     while time.time() - warm_start_time < 1.0:
-        ranges = get_range_image(bot)
+        _ = get_range_image(bot)
         supervisor_step(bot, DT_SEC)
     log_status("INIT", "Lidar ready")
 
+    last_valid: Optional[Tuple[float, float, float]] = poll_distances(bot)
+    if last_valid is None:
+        log_status("LIDAR", "No valid scan after warm-up; waiting for data before moving")
+    else:
+        log_status(
+            "INIT",
+            f"Initial ranges front={last_valid[0]:0.2f}m left={last_valid[1]:0.2f}m right={last_valid[2]:0.2f}m",
+        )
+
     try:
         while supervisor_step(bot, DT_SEC) != -1:
-            ranges = get_range_image(bot)
-            front_dist, left_dist, right_dist = get_probe_distances(ranges)
+            distances = poll_distances(bot)
+            if distances is None:
+                if last_valid is None:
+                    log_status("LIDAR", "Sensor still unavailable; holding position")
+                    set_wheel_rpms(bot, 0.0, 0.0)
+                    continue
+                log_status("LIDAR", "Using last known distances while waiting for updates")
+                front_dist, left_dist, right_dist = last_valid
+            else:
+                front_dist, left_dist, right_dist = distances
+                last_valid = distances
 
             if front_dist < FRONT_BLOCK_M:
                 turn_angle = (
@@ -300,10 +338,23 @@ def main() -> None:
                 perform_turn(bot, turn_angle, context=turn_label)
 
                 # Step once more to let lidar publish a fresh scan before resuming.
-                supervisor_step(bot, DT_SEC)
-                ranges = get_range_image(bot)
-                front_dist, left_dist, right_dist = get_probe_distances(ranges)
-                log_status("FOLLOW", "Resuming wall following after turn")
+                refreshed = poll_distances(bot)
+                if refreshed is None:
+                    log_status("LIDAR", "Turn complete but still waiting for fresh scan")
+                    set_wheel_rpms(bot, 0.0, 0.0)
+                    last_valid = None
+                    last_debug = time.time()
+                    continue
+
+                front_dist, left_dist, right_dist = refreshed
+                last_valid = refreshed
+                log_status(
+                    "FOLLOW",
+                    (
+                        "Resuming after turn with "
+                        f"front={front_dist:0.2f}m left={left_dist:0.2f}m right={right_dist:0.2f}m"
+                    ),
+                )
                 last_debug = time.time()
                 continue
 
