@@ -48,6 +48,9 @@ TURN_EPS_DEG: float = 2.0
 TURN_SETTLE_TIME: float = 0.08
 TURN_TIMEOUT_SEC: float = 4.0
 
+TURN_RIGHT_ANGLE_90: float = -85.0
+TURN_RIGHT_ANGLE_180: float = -170.0
+
 LOG_PREFIX = "[Task2]"
 
 DT_SEC: float = 0.032
@@ -285,8 +288,14 @@ def main() -> None:
             front_dist, left_dist, right_dist = get_probe_distances(ranges)
 
             if front_dist < FRONT_BLOCK_M:
-                turn_angle = -90.0 if right_dist > RIGHT_CLEAR_M else -180.0
-                turn_label = "TURN_RIGHT_90" if turn_angle == -90.0 else "TURN_RIGHT_180"
+                turn_angle = (
+                    TURN_RIGHT_ANGLE_90 if right_dist > RIGHT_CLEAR_M else TURN_RIGHT_ANGLE_180
+                )
+                turn_label = (
+                    f"TURN_RIGHT_{abs(TURN_RIGHT_ANGLE_90):.0f}"
+                    if turn_angle == TURN_RIGHT_ANGLE_90
+                    else f"TURN_RIGHT_{abs(TURN_RIGHT_ANGLE_180):.0f}"
+                )
                 log_status("BLOCKED", f"Front={front_dist:0.2f}m Right={right_dist:0.2f}m -> {turn_label}")
                 perform_turn(bot, turn_angle, context=turn_label)
 
