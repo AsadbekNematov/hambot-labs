@@ -53,11 +53,6 @@ TURN_RIGHT_ANGLE_180: float = -170.0
 
 MAX_SENSOR_ATTEMPTS: int = 6
 
-current_side_target: float = SIDE_TARGET_M
-current_front_block: float = FRONT_BLOCK_M
-current_right_clear: float = RIGHT_CLEAR_M
-dynamic_targets_set: bool = False
-
 LOG_PREFIX = "[Task2]"
 
 DT_SEC: float = 0.032
@@ -158,25 +153,6 @@ def poll_distances(bot: HamBot, attempts: int = MAX_SENSOR_ATTEMPTS) -> Optional
         if supervisor_step(bot, DT_SEC) == -1:
             break
     return None
-
-
-def set_dynamic_targets(front: float, left: float, right: float) -> None:
-    """Lock in the first valid distances as the active control thresholds."""
-    global current_side_target, current_front_block, current_right_clear, dynamic_targets_set
-
-    current_side_target = clamp(left, 0.05, MAX_RANGE)
-    current_front_block = clamp(front, 0.05, MAX_RANGE)
-    current_right_clear = clamp(right, 0.05, MAX_RANGE)
-    dynamic_targets_set = True
-
-    log_status(
-        "INIT",
-        (
-            "Dynamic thresholds set "
-            f"(side={current_side_target:0.2f}m front={current_front_block:0.2f}m "
-            f"right_clear={current_right_clear:0.2f}m)"
-        ),
-    )
 
 
 def supervisor_step(bot: HamBot, dt: float) -> int:
@@ -330,8 +306,6 @@ def main() -> None:
     if last_valid is None:
         log_status("LIDAR", "No valid scan after warm-up; waiting for data before moving")
     else:
-        if not dynamic_targets_set:
-            set_dynamic_targets(*last_valid)
         log_status(
             "INIT",
             f"Initial ranges front={last_valid[0]:0.2f}m left={last_valid[1]:0.2f}m right={last_valid[2]:0.2f}m",
@@ -350,12 +324,10 @@ def main() -> None:
             else:
                 front_dist, left_dist, right_dist = distances
                 last_valid = distances
-                if not dynamic_targets_set:
-                    set_dynamic_targets(front_dist, left_dist, right_dist)
 
-            if front_dist < current_front_block:
+            if front_dist < FRONT_BLOCK_M:
                 turn_angle = (
-                    TURN_RIGHT_ANGLE_90 if right_dist > current_right_clear else TURN_RIGHT_ANGLE_180
+                    TURN_RIGHT_ANGLE_90 if right_dist > RIGHT_CLEAR_M else TURN_RIGHT_ANGLE_180
                 )
                 turn_label = (
                     f"TURN_RIGHT_{abs(TURN_RIGHT_ANGLE_90):.0f}"
@@ -376,8 +348,6 @@ def main() -> None:
 
                 front_dist, left_dist, right_dist = refreshed
                 last_valid = refreshed
-                if not dynamic_targets_set:
-                    set_dynamic_targets(front_dist, left_dist, right_dist)
                 log_status(
                     "FOLLOW",
                     (
@@ -388,7 +358,7 @@ def main() -> None:
                 last_debug = time.time()
                 continue
 
-            error = current_side_target - left_dist
+            error = SIDE_TARGET_M - left_dist
             steer = compute_steering(error)
 
             cmd_left, cmd_right = mix_wheel_commands(BASE_FWD_RPM, steer)
@@ -400,7 +370,7 @@ def main() -> None:
                     "FOLLOW",
                     (
                         f"front={front_dist:0.2f}m left={left_dist:0.2f}m "
-                        f"right={right_dist:0.2f}m target={current_side_target:0.2f}m "
+                        f"right={right_dist:0.2f}m target={SIDE_TARGET_M:0.2f}m "
                         f"error={error:+0.2f}m steer={steer:+0.2f} "
                         f"rpmL={cmd_left:0.1f} rpmR={cmd_right:0.1f}"
                     ),
