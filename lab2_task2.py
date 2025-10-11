@@ -30,8 +30,12 @@ MAX_RANGE: float = 4.0
 SIDE_TARGET_M: float = 0.22
 SIDE_DEADBAND_M: float = 0.005
 BASE_FWD_RPM: float = 12.0
-STEER_KP: float = 20.0
-MAX_STEER_RPM: float = 12.0
+BASE_FWD_MIN_RPM: float = 7.0
+STEER_SLOWDOWN_FRACTION: float = 0.6
+STEER_KP_NEAR: float = 22.0
+STEER_KP_FAR: float = 55.0
+STEER_ERROR_FULL_M: float = 0.10
+MAX_STEER_RPM: float = 16.0
 MAX_RPM: float = 35.0
 MIN_EFFORT_RPM: float = 6.0
 
@@ -224,8 +228,23 @@ def compute_steering(error_m: float) -> float:
     """
     if abs(error_m) < SIDE_DEADBAND_M:
         return 0.0
-    steer = STEER_KP * error_m
+    abs_error = abs(error_m)
+    blend = clamp((abs_error - SIDE_DEADBAND_M) / max(STEER_ERROR_FULL_M - SIDE_DEADBAND_M, 1e-6), 0.0, 1.0)
+    gain = STEER_KP_NEAR + (STEER_KP_FAR - STEER_KP_NEAR) * blend
+    steer = gain * error_m
     return clamp(steer, -MAX_STEER_RPM, MAX_STEER_RPM)
+
+
+def compute_forward_speed(error_m: float) -> float:
+    """Slow down the forward velocity when the distance error is large."""
+    abs_error = abs(error_m)
+    if abs_error <= SIDE_DEADBAND_M:
+        return BASE_FWD_RPM
+
+    blend = clamp(abs_error / max(STEER_ERROR_FULL_M, 1e-6), 0.0, 1.0)
+    slowdown = STEER_SLOWDOWN_FRACTION * blend
+    forward = BASE_FWD_RPM * (1.0 - slowdown)
+    return clamp(forward, BASE_FWD_MIN_RPM, BASE_FWD_RPM)
 
 
 def mix_wheel_commands(forward_rpm: float, steer_rpm: float) -> Tuple[float, float]:
@@ -364,8 +383,9 @@ def main() -> None:
 
             error = SIDE_TARGET_M - left_dist
             steer = compute_steering(error)
+            forward_rpm = compute_forward_speed(error)
 
-            cmd_left, cmd_right = mix_wheel_commands(BASE_FWD_RPM, steer)
+            cmd_left, cmd_right = mix_wheel_commands(forward_rpm, steer)
             set_wheel_rpms(bot, cmd_left, cmd_right)
 
             now = time.time()
@@ -375,7 +395,7 @@ def main() -> None:
                     (
                         f"front={front_dist:0.2f}m left={left_dist:0.2f}m "
                         f"right={right_dist:0.2f}m target={SIDE_TARGET_M:0.2f}m "
-                        f"error={error:+0.2f}m steer={steer:+0.2f} "
+                        f"error={error:+0.2f}m steer={steer:+0.2f} fwd={forward_rpm:0.1f} "
                         f"rpmL={cmd_left:0.1f} rpmR={cmd_right:0.1f}"
                     ),
                 )
