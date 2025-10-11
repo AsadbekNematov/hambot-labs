@@ -27,8 +27,8 @@ RIGHT_WIN: Tuple[int, int] = (245, 270)
 MAX_RANGE: float = 4.0
 
 # Simplified motion parameters.
-SIDE_TARGET_M: float = 0.28
-SIDE_DEADBAND_M: float = 0.01
+SIDE_TARGET_M: float = 0.22
+SIDE_DEADBAND_M: float = 0.005
 BASE_FWD_RPM: float = 16.0
 STEER_KP: float = 20.0
 MAX_STEER_RPM: float = 12.0
@@ -36,7 +36,7 @@ MAX_RPM: float = 35.0
 MIN_EFFORT_RPM: float = 6.0
 
 # Obstacle handling thresholds.
-FRONT_BLOCK_M: float = 0.32
+FRONT_BLOCK_M: float = 0.26
 RIGHT_CLEAR_M: float = 0.40
 
 # Turn behaviour.
