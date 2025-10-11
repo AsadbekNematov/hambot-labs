@@ -49,9 +49,10 @@ LOOP_HZ: float = 15.0
 LOG_PERIOD_S: float = 0.5
 
 SIDE_ANGLE_DEG: int = 90
-FRONT_LEFT_ANGLE_DEG: int = 60
+FRONT_LEFT_ANGLE_DEG: int = 150        # 60° ahead of the left beam (90° → 150°)
 FRONT_SECTOR: Tuple[int, int] = (160, 200)
 ANGLE_WINDOW: int = 2                  # smoothing window for single-beam reads
+SENSOR_SEPARATION_RAD: float = math.radians(FRONT_LEFT_ANGLE_DEG - SIDE_ANGLE_DEG)
 
 
 # ---------------------------------------------------------------------------
@@ -159,14 +160,14 @@ def compute_wall_geometry(d_left: float, d_front_left: float) -> Tuple[float, fl
         angle_rad: signed angle between robot heading and wall normal (rad)
         distance_perp: perpendicular distance from robot to wall (m)
     """
-    if d_front_left <= 1e-6:
+    if d_front_left <= 1e-6 or SENSOR_SEPARATION_RAD <= 1e-6:
         return 0.0, d_left
 
-    cos60 = math.cos(math.radians(60.0))
-    sin60 = math.sin(math.radians(60.0))
+    cos_theta = math.cos(SENSOR_SEPARATION_RAD)
+    sin_theta = math.sin(SENSOR_SEPARATION_RAD)
 
-    numerator = d_front_left * cos60 - d_left
-    denominator = d_front_left * sin60
+    numerator = d_front_left * cos_theta - d_left
+    denominator = d_front_left * sin_theta
     if abs(denominator) <= 1e-6:
         angle_rad = 0.0
     else:
@@ -323,4 +324,3 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
-
