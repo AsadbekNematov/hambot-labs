@@ -383,17 +383,6 @@ def main() -> None:
 
     log_status("INIT", "Following left wall")
 
-    # PID state variables
-    integral_error = 0.0
-    prev_error = 0.0
-
-    # PID gains
-    KP_SIDE = 30.0
-    KI_SIDE = 5.0
-    KD_SIDE = 10.0
-
-    WALL_LOST_THRESHOLD: float = MAX_RANGE - 0.1
-
     # Pre-fill lidar values to let the sensor settle before control starts.
     warm_start_time = time.time()
     log_status("INIT", "Warming up lidar stream")
@@ -414,23 +403,13 @@ def main() -> None:
     try:
         while supervisor_step(bot, DT_SEC) != -1:
             distances = poll_distances(bot)
-            if distances is not None:
-                front_dist, left_dist, right_dist = distances
-                last_valid = distances
-
-            # Detect wall loss if distance too large'
-                wall_lost = left_dist >= WALL_LOST_THRESHOLD
-                if wall_lost:
-                    log_status("WALL_LOST", f"Left wall lost (left_dist={left_dist:.2f}m); gently steering left")
-                    
-                    steer_rpm = MAX_STEER_RPM * 0.3
-                    forward_rpm = BASE_FWD_MIN_RPM
-    
-                    cmd_left, cmd_right = mix_wheel_commands(forward_rpm, steer_rpm)
-                    set_wheel_rpms(bot, cmd_left, cmd_right)
-                    last_debug = time.time()
+            if distances is None:
+                if last_valid is None:
+                    log_status("LIDAR", "Sensor still unavailable; holding position")
+                    set_wheel_rpms(bot, 0.0, 0.0)
                     continue
-                
+                log_status("LIDAR", "Using last known distances while waiting for updates")
+                front_dist, left_dist, right_dist = last_valid
             else:
                 front_dist, left_dist, right_dist = distances
                 last_valid = distances
@@ -469,19 +448,10 @@ def main() -> None:
                 continue
 
             error = SIDE_TARGET_M - left_dist
-
-            #Update PID components
-            integral_error += error * DT_SEC
-            derivative_error = (error - prev_error) / DT_SEC
-            prev_error = error
-
-            #Control output
-            u = KP_SIDE * error + KI_SIDE * integral_error + KD_SIDE * derivative_error
-            steer_rpm = clamp(u, -MAX_STEER_RPM, MAX_STEER_RPM)
-        
+            steer = compute_steering(error)
             forward_rpm = compute_forward_speed(error)
 
-            cmd_left, cmd_right = mix_wheel_commands(forward_rpm, steer_rpm)
+            cmd_left, cmd_right = mix_wheel_commands(forward_rpm, steer)
             set_wheel_rpms(bot, cmd_left, cmd_right)
 
             now = time.time()
@@ -491,8 +461,7 @@ def main() -> None:
                     (
                         f"front={front_dist:0.2f}m left={left_dist:0.2f}m "
                         f"right={right_dist:0.2f}m target={SIDE_TARGET_M:0.2f}m "
-                        f"error={error:+0.3f}m P={KP_SIDE*error:+.2f} I={KI_SIDE*integral_error:+.2f} "
-                        f"D={KD_SIDE*derivative_error:+.2f} steer={steer_rpm:+.2f} fwd={forward_rpm:0.1f} "
+                        f"error={error:+0.2f}m steer={steer:+0.2f} fwd={forward_rpm:0.1f} "
                         f"rpmL={cmd_left:0.1f} rpmR={cmd_right:0.1f}"
                     ),
                 )
