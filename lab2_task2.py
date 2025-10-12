@@ -392,6 +392,8 @@ def main() -> None:
     KI_SIDE = 5.0
     KD_SIDE = 10.0
 
+    WALL_LOST_THRESHOLD: float = MAX_RANGE - 0.1
+
     # Pre-fill lidar values to let the sensor settle before control starts.
     warm_start_time = time.time()
     log_status("INIT", "Warming up lidar stream")
@@ -412,13 +414,23 @@ def main() -> None:
     try:
         while supervisor_step(bot, DT_SEC) != -1:
             distances = poll_distances(bot)
-            if distances is None:
-                if last_valid is None:
-                    log_status("LIDAR", "Sensor still unavailable; holding position")
-                    set_wheel_rpms(bot, 0.0, 0.0)
+            if distances is not None:
+                front_dist, left_dist, right_dist = distances
+                last_valid = distances
+
+            # Detect wall loss if distance too large'
+                wall_lost = left_dist >= WALL_LOST_THRESHOLD
+                if wall_lost:
+                    log_status("WALL_LOST", f"Left wall lost (left_dist={left_dist:.2f}m); gently steering left")
+                    
+                    steer_rpm = MAX_STEER_RPM * 0.3
+                    forward_rpm = BASE_FWD_MIN_RPM
+    
+                    cmd_left, cmd_right = mix_wheel_commands(forward_rpm, steer_rpm)
+                    set_wheel_rpms(bot, cmd_left, cmd_right)
+                    last_debug = time.time()
                     continue
-                log_status("LIDAR", "Using last known distances while waiting for updates")
-                front_dist, left_dist, right_dist = last_valid
+                
             else:
                 front_dist, left_dist, right_dist = distances
                 last_valid = distances
