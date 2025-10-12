@@ -62,6 +62,27 @@ LOG_PREFIX = "[Task2]"
 DT_SEC: float = 0.032
 LIDAR_SAMPLE_TTL_SEC: float = 0.35
 
+# Geometry for arc turns.
+AXLE_LEN_M: float = 0.184
+WHEEL_RADIUS_M: float = 0.045
+
+# Detection thresholds for spotting a left wall drop (corner entry).
+LEFT_DROP_MIN_DELTA_M: float = 0.08
+LEFT_DROP_RATIO: float = 0.6
+LEFT_DROP_PREV_MIN_M: float = 0.16
+LEFT_DROP_COOLDOWN_SEC: float = 2.5
+LEFT_DROP_FRONT_MARGIN_M: float = 0.05
+
+# Cornering behaviour configuration.
+CORNER_RADIUS_M: float = SIDE_TARGET_M
+CORNER_ARC_DEG: float = 90.0
+CORNER_BASE_CENTER_RPM: float = 11.5
+CORNER_MIN_CENTER_RPM: float = BASE_FWD_MIN_RPM
+CORNER_SLOW_BAND_DEG: float = 35.0
+CORNER_EPS_DEG: float = 3.0
+CORNER_SETTLE_SEC: float = 0.08
+CORNER_TIMEOUT_SEC: float = 3.5
+
 
 def clamp(value: float, lo: float, hi: float) -> float:
     """Clamp ``value`` to the closed interval [lo, hi]."""
@@ -313,6 +334,40 @@ def compute_forward_speed(error_m: float) -> float:
     return clamp(forward, BASE_FWD_MIN_RPM, BASE_FWD_RPM)
 
 
+def rpm_to_mps(rpm: float) -> float:
+    """Convert wheel RPM to linear speed at the robot centre line."""
+    return (rpm * 2.0 * math.pi * WHEEL_RADIUS_M) / 60.0
+
+
+def mps_to_rpm(speed_mps: float) -> float:
+    """Convert linear speed (m/s) back to wheel RPM."""
+    return (speed_mps * 60.0) / (2.0 * math.pi * WHEEL_RADIUS_M)
+
+
+def compute_arc_wheel_rpms(center_rpm: float, radius_m: float, turn_left: bool = True) -> Tuple[float, float]:
+    """
+    Compute left/right wheel RPMs that approximate a constant-radius arc.
+
+    ``center_rpm`` is the straight-line wheel RPM that would produce the desired
+    centreline speed. ``radius_m`` is the path radius for the robot centre.
+    """
+    radius = max(radius_m, 1e-4)
+    v_center = rpm_to_mps(center_rpm)
+    omega = v_center / radius
+    inner = v_center - omega * (AXLE_LEN_M / 2.0)
+    outer = v_center + omega * (AXLE_LEN_M / 2.0)
+
+    inner_rpm = mps_to_rpm(inner)
+    outer_rpm = mps_to_rpm(outer)
+
+    if turn_left:
+        cmd_left, cmd_right = inner_rpm, outer_rpm
+    else:
+        cmd_left, cmd_right = outer_rpm, inner_rpm
+
+    return sat_rpm(cmd_left), sat_rpm(cmd_right)
+
+
 def mix_wheel_commands(forward_rpm: float, steer_rpm: float) -> Tuple[float, float]:
     """Blend forward motion and steering into individual wheel RPMs."""
     left_cmd = sat_rpm(forward_rpm + steer_rpm)
@@ -376,6 +431,67 @@ def perform_turn(bot: HamBot, angle_deg: float, context: str = "TURN") -> None:
     log_status(context, f"Turn complete; residual error {final_error:+.1f}°")
 
 
+def perform_left_corner_arc(
+    bot: HamBot,
+    radius_m: float = CORNER_RADIUS_M,
+    angle_deg: float = CORNER_ARC_DEG,
+    context: str = "ARC_LEFT",
+) -> None:
+    """Follow a quarter-circle arc to the left while advancing."""
+    if angle_deg <= 1e-3:
+        return
+
+    radius = max(radius_m, 1e-3)
+    log_status(context, f"Begin left arc radius={radius:.2f}m angle={angle_deg:.0f}°")
+
+    start_heading = normalize_deg(get_heading_deg(bot))
+    target = normalize_deg(start_heading + angle_deg)
+    start_time = time.time()
+    settle_start: Optional[float] = None
+    final_error = float("nan")
+
+    while True:
+        heading = normalize_deg(get_heading_deg(bot))
+        error = smallest_angle_deg(target - heading)
+        final_error = error
+        abs_error = abs(error)
+
+        if abs_error <= CORNER_EPS_DEG:
+            if settle_start is None:
+                settle_start = time.time()
+            elif time.time() - settle_start >= CORNER_SETTLE_SEC:
+                break
+            set_wheel_rpms(bot, 0.0, 0.0)
+        else:
+            settle_start = None
+            if abs_error < CORNER_SLOW_BAND_DEG:
+                base_ratio = max(
+                    CORNER_MIN_CENTER_RPM / max(CORNER_BASE_CENTER_RPM, 1e-6),
+                    abs_error / max(CORNER_SLOW_BAND_DEG, 1e-6),
+                )
+            else:
+                base_ratio = 1.0
+            center_rpm = clamp(
+                CORNER_BASE_CENTER_RPM * base_ratio,
+                CORNER_MIN_CENTER_RPM,
+                CORNER_BASE_CENTER_RPM,
+            )
+            cmd_left, cmd_right = compute_arc_wheel_rpms(center_rpm, radius, turn_left=True)
+            set_wheel_rpms(bot, cmd_left, cmd_right)
+
+        if supervisor_step(bot, DT_SEC) == -1:
+            log_status(context, "Supervisor requested shutdown during arc")
+            break
+
+        if time.time() - start_time >= CORNER_TIMEOUT_SEC:
+            log_status(context, f"Timeout while executing arc (remaining error {error:+.1f}°)")
+            break
+
+    set_wheel_rpms(bot, 0.0, 0.0)
+    supervisor_step(bot, DT_SEC)
+    log_status(context, f"Arc complete; residual error {final_error:+.1f}°")
+
+
 def main() -> None:
     """Simple left-wall following loop."""
     bot = HamBot()
@@ -400,6 +516,9 @@ def main() -> None:
             f"Initial ranges front={last_valid[0]:0.2f}m left={last_valid[1]:0.2f}m right={last_valid[2]:0.2f}m",
         )
 
+    last_left_sample: Optional[float] = last_valid[1] if last_valid is not None else None
+    last_corner_time = 0.0
+
     try:
         while supervisor_step(bot, DT_SEC) != -1:
             distances = poll_distances(bot)
@@ -410,9 +529,11 @@ def main() -> None:
                     continue
                 log_status("LIDAR", "Using last known distances while waiting for updates")
                 front_dist, left_dist, right_dist = last_valid
+                new_sample = False
             else:
                 front_dist, left_dist, right_dist = distances
                 last_valid = distances
+                new_sample = True
 
             if front_dist < FRONT_BLOCK_M:
                 turn_angle = (
@@ -432,15 +553,65 @@ def main() -> None:
                     log_status("LIDAR", "Turn complete but still waiting for fresh scan")
                     set_wheel_rpms(bot, 0.0, 0.0)
                     last_valid = None
+                    last_left_sample = None
                     last_debug = time.time()
                     continue
 
                 front_dist, left_dist, right_dist = refreshed
                 last_valid = refreshed
+                last_left_sample = left_dist
                 log_status(
                     "FOLLOW",
                     (
                         "Resuming after turn with "
+                        f"front={front_dist:0.2f}m left={left_dist:0.2f}m right={right_dist:0.2f}m"
+                    ),
+                )
+                last_corner_time = time.time()
+                last_debug = time.time()
+                continue
+
+            left_drop = False
+            if new_sample and last_left_sample is not None:
+                drop = last_left_sample - left_dist
+                enough_time = (time.time() - last_corner_time) >= LEFT_DROP_COOLDOWN_SEC
+                if (
+                    last_left_sample >= LEFT_DROP_PREV_MIN_M
+                    and drop >= LEFT_DROP_MIN_DELTA_M
+                    and left_dist <= last_left_sample * LEFT_DROP_RATIO
+                    and front_dist > (FRONT_BLOCK_M + LEFT_DROP_FRONT_MARGIN_M)
+                    and enough_time
+                ):
+                    left_drop = True
+
+            if left_drop:
+                log_status(
+                    "CORNER",
+                    (
+                        f"Left drop {last_left_sample:0.2f}m→{left_dist:0.2f}m "
+                        f"(front={front_dist:0.2f}m) -> ARC_LEFT"
+                    ),
+                )
+                perform_left_corner_arc(bot, context="ARC_LEFT")
+
+                refreshed = poll_distances(bot)
+                if refreshed is None:
+                    log_status("LIDAR", "Arc complete but waiting for fresh scan")
+                    set_wheel_rpms(bot, 0.0, 0.0)
+                    last_valid = None
+                    last_left_sample = None
+                    last_corner_time = time.time()
+                    last_debug = time.time()
+                    continue
+
+                front_dist, left_dist, right_dist = refreshed
+                last_valid = refreshed
+                last_left_sample = left_dist
+                last_corner_time = time.time()
+                log_status(
+                    "FOLLOW",
+                    (
+                        "Resuming after arc with "
                         f"front={front_dist:0.2f}m left={left_dist:0.2f}m right={right_dist:0.2f}m"
                     ),
                 )
@@ -466,6 +637,9 @@ def main() -> None:
                     ),
                 )
                 last_debug = now
+
+            if new_sample:
+                last_left_sample = left_dist
 
     except KeyboardInterrupt:
         print("\n[Task2] Interrupted by user.")
