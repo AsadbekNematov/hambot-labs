@@ -6,7 +6,7 @@ HamBot is a Python library designed to control a robot equipped with various sen
 ![Pi Camera](docs/figures/hambot_dims.png)
 ## Technical Specifications
   
-| Component                  | Specification                                                                                                                                                                                                            |
+| Component                    | Specification                                                                                                                                                                                                            |
 |-----------------------------|--------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
 | Wheel Diameter / Radius     | 90 mm / 45 mm                                                                                                                                                                                                            |
 | Axel Length (wheel spacing) | 184 mm                                                                                                                                                                                                                   |
