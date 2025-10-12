@@ -383,6 +383,15 @@ def main() -> None:
 
     log_status("INIT", "Following left wall")
 
+    # PID state variables
+    integral_error = 0.0
+    prev_error = 0.0
+
+    # PID gains
+    KP_SIDE = 30.0
+    KI_SIDE = 5.0
+    KD_SIDE = 10.0
+
     # Pre-fill lidar values to let the sensor settle before control starts.
     warm_start_time = time.time()
     log_status("INIT", "Warming up lidar stream")
@@ -448,10 +457,19 @@ def main() -> None:
                 continue
 
             error = SIDE_TARGET_M - left_dist
-            steer = compute_steering(error)
+
+            #Update PID components
+            integral_error += error * DT_SEC
+            derivative_error = (error - prev_error) / DT_SEC
+            prev_error = error
+
+            #Control output
+            u = KP_SIDE * error + KI_SIDE * integral_error + KD_SIDE * derivative_error
+            steer_rpm = clamp(u, -MAX_STEER_RPM, MAX_STEER_RPM)
+        
             forward_rpm = compute_forward_speed(error)
 
-            cmd_left, cmd_right = mix_wheel_commands(forward_rpm, steer)
+            cmd_left, cmd_right = mix_wheel_commands(forward_rpm, steer_rpm)
             set_wheel_rpms(bot, cmd_left, cmd_right)
 
             now = time.time()
@@ -461,7 +479,8 @@ def main() -> None:
                     (
                         f"front={front_dist:0.2f}m left={left_dist:0.2f}m "
                         f"right={right_dist:0.2f}m target={SIDE_TARGET_M:0.2f}m "
-                        f"error={error:+0.2f}m steer={steer:+0.2f} fwd={forward_rpm:0.1f} "
+                        f"error={error:+0.3f}m P={KP_SIDE*error:+.2f} I={KI_SIDE*integral_error:+.2f} "
+                        f"D={KD_SIDE*derivative_error:+.2f} steer={steer_rpm:+.2f} fwd={forward_rpm:0.1f} "
                         f"rpmL={cmd_left:0.1f} rpmR={cmd_right:0.1f}"
                     ),
                 )
