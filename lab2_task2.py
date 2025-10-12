@@ -397,7 +397,7 @@ def main() -> None:
     # Pre-fill lidar values to let the sensor settle before control starts.
     warm_start_time = time.time()
     log_status("INIT", "Warming up lidar stream")
-    while time.time() - warm_start_time < 1.0:
+    while time.time() - warm_start_time < 2.0:
         _ = fetch_lidar_scan(bot)
         supervisor_step(bot, DT_SEC)
     log_status("INIT", "Lidar ready")
