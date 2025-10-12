@@ -40,7 +40,7 @@ MAX_RPM: float = 35.0
 MIN_EFFORT_RPM: float = 6.0
 
 # Obstacle handling thresholds.
-FRONT_BLOCK_M: float = 0.25
+FRONT_BLOCK_M: float = 0.22
 RIGHT_CLEAR_M: float = 0.40
 
 # Turn behaviour.
