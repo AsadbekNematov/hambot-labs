@@ -75,8 +75,8 @@ LEFT_DROP_FRONT_MARGIN_M: float = 0.05
 
 # Cornering behaviour configuration.
 CORNER_RADIUS_M: float = SIDE_TARGET_M
-CORNER_ARC_DEG: float = 90.0
-CORNER_BASE_CENTER_RPM: float = 18.0
+CORNER_ARC_DEG: float = 85.0
+CORNER_BASE_CENTER_RPM: float = 13.0
 CORNER_MIN_CENTER_RPM: float = BASE_FWD_MIN_RPM
 CORNER_SLOW_BAND_DEG: float = 35.0
 CORNER_EPS_DEG: float = 3.0
