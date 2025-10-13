@@ -88,6 +88,7 @@ CORNER_RADIUS_KP: float = 0.75
 CORNER_RADIUS_MAX_DELTA_M: float = 0.10
 CORNER_RADIUS_MIN_M: float = AXLE_LEN_M / 2.0 + 0.01
 CORNER_RADIUS_MAX_M: float = 0.45
+CORNER_RADIUS_BIAS_M: float = 0.02
 
 # Running estimate of the nominal left-wall clearance.
 LEFT_REF_ALPHA: float = 0.25
@@ -451,7 +452,8 @@ def perform_left_corner_arc(
 
     desired_left = clamp(desired_left_m if desired_left_m is not None else SIDE_TARGET_M, LEFT_REF_MIN_M, LEFT_REF_MAX_M)
 
-    base_radius = clamp(radius_m, CORNER_RADIUS_MIN_M, CORNER_RADIUS_MAX_M)
+    biased_radius = radius_m + CORNER_RADIUS_BIAS_M
+    base_radius = clamp(biased_radius, CORNER_RADIUS_MIN_M, CORNER_RADIUS_MAX_M)
     radius_cmd = base_radius
     half_axle = AXLE_LEN_M / 2.0
     inner_radius = max(base_radius - half_axle, 1e-4)
@@ -471,7 +473,8 @@ def perform_left_corner_arc(
     log_status(
         context,
         (
-            f"Begin left arc radius={base_radius:.2f}m angle={angle_deg:.0f}° "
+            f"Begin left arc radius={base_radius:.2f}m "
+            f"(bias={CORNER_RADIUS_BIAS_M:+0.3f}m) angle={angle_deg:.0f}° "
             f"(allow {timeout_limit:.1f}s)"
         ),
     )
