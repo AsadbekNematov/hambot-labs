@@ -89,6 +89,7 @@ CORNER_RADIUS_MAX_DELTA_M: float = 0.10
 CORNER_RADIUS_MIN_M: float = AXLE_LEN_M / 2.0 + 0.01
 CORNER_RADIUS_MAX_M: float = 0.45
 CORNER_RADIUS_BIAS_M: float = 0.02
+CORNER_LEFT_EXTRA_RPM: float = 3.0
 
 # Running estimate of the nominal left-wall clearance.
 LEFT_REF_ALPHA: float = 0.25
@@ -534,6 +535,7 @@ def perform_left_corner_arc(
             center_rpm = clamp(center_rpm, min_center_rpm, CORNER_BASE_CENTER_RPM)
             center_rpm = max(center_rpm, required_center)
             cmd_left, cmd_right = compute_arc_wheel_rpms(center_rpm, effective_radius, turn_left=True)
+            cmd_left += CORNER_LEFT_EXTRA_RPM
             if abs(cmd_left) < MIN_EFFORT_RPM:
                 cmd_left = math.copysign(MIN_EFFORT_RPM, cmd_left if abs(cmd_left) > 1e-6 else 1.0)
             cmd_left = sat_rpm(cmd_left)
