@@ -27,7 +27,7 @@ RIGHT_WIN: Tuple[int, int] = (245, 270)
 MAX_RANGE: float = 4.0
 
 # Simplified motion parameters.
-SIDE_TARGET_M: float = 0.22
+SIDE_TARGET_M: float = 0.25
 SIDE_DEADBAND_M: float = 0.005
 BASE_FWD_RPM: float = 12.0
 BASE_FWD_MIN_RPM: float = 7.0
@@ -40,7 +40,7 @@ MAX_RPM: float = 35.0
 MIN_EFFORT_RPM: float = 6.0
 
 # Obstacle handling thresholds.
-FRONT_BLOCK_M: float = 0.22
+FRONT_BLOCK_M: float = 0.25
 RIGHT_CLEAR_M: float = 0.40
 
 # Turn behaviour.
@@ -75,7 +75,7 @@ LEFT_DROP_PREV_MIN_M: float = 0.16
 LEFT_DROP_COOLDOWN_SEC: float = 2.5
 LEFT_DROP_FRONT_MARGIN_M: float = 0.05
 
-# Cornering behaviour configuration (keeps ~0.22 m clearance through a 90° bend).
+# Cornering behaviour configuration (keeps ~0.25 m clearance through a 90° bend).
 CORNER_TARGET_RADIUS_M: float = SIDE_TARGET_M  # centreline radius
 CORNER_ARC_DEG: float = 80.0
 CORNER_BASE_CENTER_RPM: float = 15.0
