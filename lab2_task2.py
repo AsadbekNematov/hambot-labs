@@ -82,6 +82,7 @@ CORNER_SLOW_BAND_DEG: float = 35.0
 CORNER_EPS_DEG: float = 3.0
 CORNER_SETTLE_SEC: float = 0.08
 CORNER_TIMEOUT_SEC: float = 3.5
+CORNER_MIN_SCALE: float = 0.35
 
 
 def clamp(value: float, lo: float, hi: float) -> float:
@@ -346,26 +347,22 @@ def mps_to_rpm(speed_mps: float) -> float:
 
 def compute_arc_wheel_rpms(center_rpm: float, radius_m: float, turn_left: bool = True) -> Tuple[float, float]:
     """
-    Compute left/right wheel RPMs that approximate a constant-radius arc.
+    Compute the ideal per-wheel RPMs for a constant-radius arc (no saturation).
 
-    ``center_rpm`` is the straight-line wheel RPM that would produce the desired
-    centreline speed. ``radius_m`` is the path radius for the robot centre.
+    ``center_rpm`` is the straight-line wheel RPM that would yield the requested
+    centreline speed; ``radius_m`` is the radius of the robot's centre path.
     """
-    radius = max(radius_m, 1e-4)
-    v_center = rpm_to_mps(center_rpm)
-    omega = v_center / radius
-    inner = v_center - omega * (AXLE_LEN_M / 2.0)
-    outer = v_center + omega * (AXLE_LEN_M / 2.0)
+    half_axle = AXLE_LEN_M / 2.0
+    radius = max(radius_m, half_axle + 1e-4)
+    inner_radius = max(radius - half_axle, 1e-4)
+    outer_radius = radius + half_axle
 
-    inner_rpm = mps_to_rpm(inner)
-    outer_rpm = mps_to_rpm(outer)
+    inner_rpm = center_rpm * (inner_radius / radius)
+    outer_rpm = center_rpm * (outer_radius / radius)
 
     if turn_left:
-        cmd_left, cmd_right = inner_rpm, outer_rpm
-    else:
-        cmd_left, cmd_right = outer_rpm, inner_rpm
-
-    return sat_rpm(cmd_left), sat_rpm(cmd_right)
+        return inner_rpm, outer_rpm
+    return outer_rpm, inner_rpm
 
 
 def mix_wheel_commands(forward_rpm: float, steer_rpm: float) -> Tuple[float, float]:
@@ -442,6 +439,23 @@ def perform_left_corner_arc(
         return
 
     radius = max(radius_m, 1e-3)
+    half_axle = AXLE_LEN_M / 2.0
+    inner_radius = max(radius - half_axle, 1e-4)
+
+    base_left, base_right = compute_arc_wheel_rpms(CORNER_BASE_CENTER_RPM, radius, turn_left=True)
+    min_center_rpm = max(
+        CORNER_MIN_CENTER_RPM,
+        MIN_EFFORT_RPM * radius / inner_radius,
+    )
+    slow_left, slow_right = compute_arc_wheel_rpms(min_center_rpm, radius, turn_left=True)
+
+    # Maintain the geometric speed ratio from lab1's arc derivation.
+    if abs(base_left) > 1e-6:
+        slow_scale = abs(slow_left) / abs(base_left)
+    else:
+        slow_scale = 1.0
+    scale_floor = max(CORNER_MIN_SCALE, slow_scale)
+
     expected_time = (math.radians(angle_deg) * radius) / max(rpm_to_mps(CORNER_BASE_CENTER_RPM), 1e-6)
     timeout_limit = max(CORNER_TIMEOUT_SEC, expected_time * 1.5)
     log_status(
@@ -472,19 +486,11 @@ def perform_left_corner_arc(
             set_wheel_rpms(bot, 0.0, 0.0)
         else:
             settle_start = None
-            if abs_error < CORNER_SLOW_BAND_DEG:
-                base_ratio = max(
-                    CORNER_MIN_CENTER_RPM / max(CORNER_BASE_CENTER_RPM, 1e-6),
-                    abs_error / max(CORNER_SLOW_BAND_DEG, 1e-6),
-                )
-            else:
-                base_ratio = 1.0
-            center_rpm = clamp(
-                CORNER_BASE_CENTER_RPM * base_ratio,
-                CORNER_MIN_CENTER_RPM,
-                CORNER_BASE_CENTER_RPM,
-            )
-            cmd_left, cmd_right = compute_arc_wheel_rpms(center_rpm, radius, turn_left=True)
+            speed_ratio = min(abs_error / max(CORNER_SLOW_BAND_DEG, 1e-6), 1.0)
+            scale = slow_scale + (1.0 - slow_scale) * speed_ratio
+            scale = max(scale_floor, scale)
+            cmd_left = sat_rpm(base_left * scale)
+            cmd_right = sat_rpm(base_right * scale)
             set_wheel_rpms(bot, cmd_left, cmd_right)
 
         if supervisor_step(bot, DT_SEC) == -1:
