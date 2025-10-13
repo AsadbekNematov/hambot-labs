@@ -61,7 +61,8 @@ LOG_PREFIX = "[Task2]"
 
 DT_SEC: float = 0.032
 LIDAR_SAMPLE_TTL_SEC: float = 0.35
-POST_TURN_LIDAR_REFRESH_SEC: float = 0.25
+POST_TURN_LIDAR_REFRESH_SEC: float = 1.0
+INITIAL_LIDAR_WARMUP_SEC: float = 2.0
 
 # Geometry for arc turns.
 AXLE_LEN_M: float = 0.184
@@ -596,11 +597,8 @@ def main() -> None:
     log_status("INIT", "Following left wall")
 
     # Pre-fill lidar values to let the sensor settle before control starts.
-    warm_start_time = time.time()
     log_status("INIT", "Warming up lidar stream")
-    while time.time() - warm_start_time < 2.0:
-        _ = fetch_lidar_scan(bot)
-        supervisor_step(bot, DT_SEC)
+    refresh_lidar_stream(bot, duration_sec=INITIAL_LIDAR_WARMUP_SEC)
     log_status("INIT", "Lidar ready")
 
     last_valid: Optional[Tuple[float, float, float]] = poll_distances(bot)
