@@ -83,6 +83,15 @@ CORNER_EPS_DEG: float = 3.0
 CORNER_SETTLE_SEC: float = 0.08
 CORNER_TIMEOUT_SEC: float = 3.5
 CORNER_MIN_SCALE: float = 0.35
+CORNER_ADJUST_KP: float = 85.0
+CORNER_ADJUST_MAX_RPM: float = 8.0
+CORNER_ADJUST_DEADBAND_M: float = 0.01
+CORNER_SENSOR_PERIOD_SEC: float = 0.05
+
+# Running estimate of the nominal left-wall clearance.
+LEFT_REF_ALPHA: float = 0.25
+LEFT_REF_MIN_M: float = 0.16
+LEFT_REF_MAX_M: float = 0.45
 
 
 def clamp(value: float, lo: float, hi: float) -> float:
@@ -432,13 +441,16 @@ def perform_left_corner_arc(
     bot: HamBot,
     radius_m: float = CORNER_RADIUS_M,
     angle_deg: float = CORNER_ARC_DEG,
+    desired_left_m: Optional[float] = None,
     context: str = "ARC_LEFT",
 ) -> None:
     """Follow a quarter-circle arc to the left while advancing."""
     if angle_deg <= 1e-3:
         return
 
-    radius = max(radius_m, 1e-3)
+    desired_left = clamp(desired_left_m if desired_left_m is not None else SIDE_TARGET_M, LEFT_REF_MIN_M, LEFT_REF_MAX_M)
+
+    radius = max(radius_m, desired_left, AXLE_LEN_M / 2.0 + 1e-3)
     half_axle = AXLE_LEN_M / 2.0
     inner_radius = max(radius - half_axle, 1e-4)
 
@@ -449,7 +461,6 @@ def perform_left_corner_arc(
     )
     slow_left, slow_right = compute_arc_wheel_rpms(min_center_rpm, radius, turn_left=True)
 
-    # Maintain the geometric speed ratio from lab1's arc derivation.
     if abs(base_left) > 1e-6:
         slow_scale = abs(slow_left) / abs(base_left)
     else:
@@ -471,6 +482,10 @@ def perform_left_corner_arc(
     start_time = time.time()
     settle_start: Optional[float] = None
     final_error = float("nan")
+    adjust_rpm = 0.0
+    last_sensor = 0.0
+    last_feedback: Optional[float] = None
+    last_feedback_log = 0.0
 
     while True:
         heading = normalize_deg(get_heading_deg(bot))
@@ -484,14 +499,39 @@ def perform_left_corner_arc(
             elif time.time() - settle_start >= CORNER_SETTLE_SEC:
                 break
             set_wheel_rpms(bot, 0.0, 0.0)
+            adjust_rpm = 0.0
         else:
             settle_start = None
             speed_ratio = min(abs_error / max(CORNER_SLOW_BAND_DEG, 1e-6), 1.0)
             scale = slow_scale + (1.0 - slow_scale) * speed_ratio
             scale = max(scale_floor, scale)
-            cmd_left = sat_rpm(base_left * scale)
-            cmd_right = sat_rpm(base_right * scale)
+
+            now = time.time()
+            if now - last_sensor >= CORNER_SENSOR_PERIOD_SEC:
+                ranges, timestamps = fetch_lidar_scan(bot)
+                (front_s, left_s, _), flags = get_probe_distances(ranges, sample_timestamps=timestamps)
+                if flags[1]:
+                    last_feedback = left_s
+                    err_left = desired_left - left_s
+                    if abs(err_left) <= CORNER_ADJUST_DEADBAND_M:
+                        adjust_rpm = 0.0
+                    else:
+                        adjust_rpm = clamp(CORNER_ADJUST_KP * err_left, -CORNER_ADJUST_MAX_RPM, CORNER_ADJUST_MAX_RPM)
+                last_sensor = now
+
+            cmd_left = sat_rpm(base_left * scale + adjust_rpm)
+            cmd_right = sat_rpm(base_right * scale - adjust_rpm)
             set_wheel_rpms(bot, cmd_left, cmd_right)
+
+            if last_feedback is not None and now - last_feedback_log >= 0.25:
+                log_status(
+                    context,
+                    (
+                        f"heading_err={error:+.1f}° scale={scale:.2f} "
+                        f"left={last_feedback:0.2f}m target={desired_left:0.2f}m adjust={adjust_rpm:+.1f}rpm"
+                    ),
+                )
+                last_feedback_log = now
 
         if supervisor_step(bot, DT_SEC) == -1:
             log_status(context, "Supervisor requested shutdown during arc")
@@ -532,6 +572,7 @@ def main() -> None:
 
     last_left_sample: Optional[float] = last_valid[1] if last_valid is not None else None
     last_corner_time = 0.0
+    left_reference = SIDE_TARGET_M
 
     try:
         while supervisor_step(bot, DT_SEC) != -1:
@@ -548,6 +589,9 @@ def main() -> None:
                 front_dist, left_dist, right_dist = distances
                 last_valid = distances
                 new_sample = True
+                if LEFT_REF_MIN_M <= left_dist <= LEFT_REF_MAX_M:
+                    filtered = clamp(left_dist, LEFT_REF_MIN_M, LEFT_REF_MAX_M)
+                    left_reference = (1.0 - LEFT_REF_ALPHA) * left_reference + LEFT_REF_ALPHA * filtered
 
             if front_dist < FRONT_BLOCK_M:
                 turn_angle = (
@@ -574,6 +618,9 @@ def main() -> None:
                 front_dist, left_dist, right_dist = refreshed
                 last_valid = refreshed
                 last_left_sample = left_dist
+                if LEFT_REF_MIN_M <= left_dist <= LEFT_REF_MAX_M:
+                    filtered = clamp(left_dist, LEFT_REF_MIN_M, LEFT_REF_MAX_M)
+                    left_reference = (1.0 - LEFT_REF_ALPHA) * left_reference + LEFT_REF_ALPHA * filtered
                 log_status(
                     "FOLLOW",
                     (
@@ -595,18 +642,24 @@ def main() -> None:
                     and left_dist <= last_left_sample * LEFT_DROP_RATIO
                     and front_dist > (FRONT_BLOCK_M + LEFT_DROP_FRONT_MARGIN_M)
                     and enough_time
-                ):
+                        ):
                     left_drop = True
 
             if left_drop:
+                arc_target_left = clamp(left_reference, LEFT_REF_MIN_M, LEFT_REF_MAX_M)
                 log_status(
                     "CORNER",
                     (
                         f"Left drop {last_left_sample:0.2f}m→{left_dist:0.2f}m "
-                        f"(front={front_dist:0.2f}m) -> ARC_LEFT"
+                        f"(front={front_dist:0.2f}m) -> ARC_LEFT radius≈{arc_target_left:0.2f}m"
                     ),
                 )
-                perform_left_corner_arc(bot, context="ARC_LEFT")
+                perform_left_corner_arc(
+                    bot,
+                    radius_m=arc_target_left,
+                    desired_left_m=arc_target_left,
+                    context="ARC_LEFT",
+                )
 
                 refreshed = poll_distances(bot)
                 if refreshed is None:
@@ -622,6 +675,9 @@ def main() -> None:
                 last_valid = refreshed
                 last_left_sample = left_dist
                 last_corner_time = time.time()
+                if LEFT_REF_MIN_M <= left_dist <= LEFT_REF_MAX_M:
+                    filtered = clamp(left_dist, LEFT_REF_MIN_M, LEFT_REF_MAX_M)
+                    left_reference = (1.0 - LEFT_REF_ALPHA) * left_reference + LEFT_REF_ALPHA * filtered
                 log_status(
                     "FOLLOW",
                     (
