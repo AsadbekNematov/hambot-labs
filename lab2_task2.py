@@ -75,7 +75,7 @@ LEFT_DROP_FRONT_MARGIN_M: float = 0.05
 
 # Cornering behaviour configuration (keeps ~0.22 m clearance through a 90° bend).
 CORNER_TARGET_RADIUS_M: float = SIDE_TARGET_M  # centreline radius
-CORNER_ARC_DEG: float = 90.0
+CORNER_ARC_DEG: float = 80.0
 CORNER_BASE_CENTER_RPM: float = 15.0
 CORNER_MIN_CENTER_RPM: float = BASE_FWD_MIN_RPM
 CORNER_SLOW_BAND_DEG: float = 35.0
@@ -89,7 +89,7 @@ CORNER_RADIUS_MAX_DELTA_M: float = 0.10
 CORNER_RADIUS_MIN_M: float = AXLE_LEN_M / 2.0 + 0.01
 CORNER_RADIUS_MAX_M: float = 0.45
 CORNER_RADIUS_BIAS_M: float = 0.02
-CORNER_LEFT_EXTRA_RPM: float = 3.0
+CORNER_LEFT_EXTRA_RPM: float = 2.0
 
 # Running estimate of the nominal left-wall clearance.
 LEFT_REF_ALPHA: float = 0.25
