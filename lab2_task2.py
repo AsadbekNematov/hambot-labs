@@ -704,6 +704,8 @@ def main() -> None:
                     context="ARC_LEFT",
                 )
 
+                # Allow the lidar stream to catch up after the arc completes.
+                refresh_lidar_stream(bot)
                 refreshed = poll_distances(bot)
                 if refreshed is None:
                     log_status("LIDAR", "Arc complete but waiting for fresh scan")
