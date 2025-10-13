@@ -76,13 +76,13 @@ LEFT_DROP_FRONT_MARGIN_M: float = 0.05
 # Cornering behaviour configuration (keeps ~0.22 m clearance through a 90° bend).
 CORNER_TARGET_RADIUS_M: float = SIDE_TARGET_M  # centreline radius
 CORNER_ARC_DEG: float = 90.0
-CORNER_BASE_CENTER_RPM: float = 13.0
+CORNER_BASE_CENTER_RPM: float = 15.0
 CORNER_MIN_CENTER_RPM: float = BASE_FWD_MIN_RPM
 CORNER_SLOW_BAND_DEG: float = 35.0
 CORNER_EPS_DEG: float = 3.0
 CORNER_SETTLE_SEC: float = 0.08
 CORNER_TIMEOUT_SEC: float = 3.5
-CORNER_MIN_SCALE: float = 0.45
+CORNER_MIN_SCALE: float = 0.52
 CORNER_SENSOR_PERIOD_SEC: float = 0.06
 CORNER_RADIUS_KP: float = 0.75
 CORNER_RADIUS_MAX_DELTA_M: float = 0.10
@@ -485,6 +485,7 @@ def perform_left_corner_arc(
     last_feedback: Optional[float] = None
     last_feedback_log = 0.0
     radius_adjust = 0.0
+    last_cmd_log = 0.0
 
     while True:
         heading = normalize_deg(get_heading_deg(bot))
@@ -540,12 +541,22 @@ def perform_left_corner_arc(
                 log_status(
                     context,
                     (
-                        f"heading_err={error:+.1f}° scale={scale:.2f} "
+                            f"heading_err={error:+.1f}° scale={scale:.2f} "
                         f"left={last_feedback:0.2f}m target={desired_left:0.2f}m "
-                        f"radius={effective_radius:0.2f}m"
+                        f"radius={effective_radius:0.2f}m rpmL={cmd_left:0.1f} rpmR={cmd_right:0.1f}"
                     ),
                 )
                 last_feedback_log = now
+                last_cmd_log = now
+            elif now - last_cmd_log >= 0.35:
+                log_status(
+                    context,
+                    (
+                        f"heading_err={error:+.1f}° scale={scale:.2f} "
+                        f"radius={effective_radius:0.2f}m rpmL={cmd_left:0.1f} rpmR={cmd_right:0.1f}"
+                    ),
+                )
+                last_cmd_log = now
 
         if supervisor_step(bot, DT_SEC) == -1:
             log_status(context, "Supervisor requested shutdown during arc")
