@@ -730,10 +730,10 @@ def main() -> None:
                 )
                 last_debug = time.time()
                 continue
-
-            error = SIDE_TARGET_M - left_dist
-            steer = compute_steering(error)
+            error = SIDE_TARGET_M - right_dist  
+            steer = -compute_steering(error)     
             forward_rpm = compute_forward_speed(error)
+
 
             cmd_left, cmd_right = mix_wheel_commands(forward_rpm, steer)
             set_wheel_rpms(bot, cmd_left, cmd_right)
