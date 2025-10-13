@@ -73,21 +73,21 @@ LEFT_DROP_PREV_MIN_M: float = 0.16
 LEFT_DROP_COOLDOWN_SEC: float = 2.5
 LEFT_DROP_FRONT_MARGIN_M: float = 0.05
 
-# Cornering behaviour configuration.
-CORNER_RADIUS_M: float = SIDE_TARGET_M
-CORNER_ARC_DEG: float = 85.0
+# Cornering behaviour configuration (keeps ~0.22 m clearance through a 90° bend).
+CORNER_TARGET_RADIUS_M: float = SIDE_TARGET_M  # centreline radius
+CORNER_ARC_DEG: float = 90.0
 CORNER_BASE_CENTER_RPM: float = 13.0
 CORNER_MIN_CENTER_RPM: float = BASE_FWD_MIN_RPM
 CORNER_SLOW_BAND_DEG: float = 35.0
 CORNER_EPS_DEG: float = 3.0
 CORNER_SETTLE_SEC: float = 0.08
 CORNER_TIMEOUT_SEC: float = 3.5
-CORNER_MIN_SCALE: float = 0.35
+CORNER_MIN_SCALE: float = 0.45
 CORNER_SENSOR_PERIOD_SEC: float = 0.06
-CORNER_RADIUS_KP: float = 0.85
-CORNER_RADIUS_MAX_DELTA_M: float = 0.14
-CORNER_RADIUS_MIN_M: float = AXLE_LEN_M / 2.0 + 0.03
-CORNER_RADIUS_MAX_M: float = 0.55
+CORNER_RADIUS_KP: float = 0.75
+CORNER_RADIUS_MAX_DELTA_M: float = 0.10
+CORNER_RADIUS_MIN_M: float = AXLE_LEN_M / 2.0 + 0.01
+CORNER_RADIUS_MAX_M: float = 0.45
 
 # Running estimate of the nominal left-wall clearance.
 LEFT_REF_ALPHA: float = 0.25
@@ -440,7 +440,7 @@ def perform_turn(bot: HamBot, angle_deg: float, context: str = "TURN") -> None:
 
 def perform_left_corner_arc(
     bot: HamBot,
-    radius_m: float = CORNER_RADIUS_M,
+    radius_m: float = CORNER_TARGET_RADIUS_M,
     angle_deg: float = CORNER_ARC_DEG,
     desired_left_m: Optional[float] = None,
     context: str = "ARC_LEFT",
@@ -451,8 +451,7 @@ def perform_left_corner_arc(
 
     desired_left = clamp(desired_left_m if desired_left_m is not None else SIDE_TARGET_M, LEFT_REF_MIN_M, LEFT_REF_MAX_M)
 
-    base_radius = max(radius_m, desired_left, CORNER_RADIUS_MIN_M)
-    base_radius = min(base_radius, CORNER_RADIUS_MAX_M)
+    base_radius = clamp(radius_m, CORNER_RADIUS_MIN_M, CORNER_RADIUS_MAX_M)
     radius_cmd = base_radius
     half_axle = AXLE_LEN_M / 2.0
     inner_radius = max(base_radius - half_axle, 1e-4)
@@ -524,13 +523,15 @@ def perform_left_corner_arc(
                     )
                 last_sensor = now
 
-            effective_radius = max(radius_cmd, CORNER_RADIUS_MIN_M)
+            effective_radius = clamp(radius_cmd, CORNER_RADIUS_MIN_M, CORNER_RADIUS_MAX_M)
             inner_r = max(effective_radius - half_axle, 1e-4)
             center_rpm = CORNER_BASE_CENTER_RPM * scale
             required_center = MIN_EFFORT_RPM * effective_radius / inner_r
             center_rpm = clamp(center_rpm, min_center_rpm, CORNER_BASE_CENTER_RPM)
             center_rpm = max(center_rpm, required_center)
             cmd_left, cmd_right = compute_arc_wheel_rpms(center_rpm, effective_radius, turn_left=True)
+            if abs(cmd_left) < MIN_EFFORT_RPM:
+                cmd_left = math.copysign(MIN_EFFORT_RPM, cmd_left if abs(cmd_left) > 1e-6 else 1.0)
             cmd_left = sat_rpm(cmd_left)
             cmd_right = sat_rpm(cmd_right)
             set_wheel_rpms(bot, cmd_left, cmd_right)
