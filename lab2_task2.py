@@ -22,7 +22,7 @@ from src.robot_systems.robot import HamBot  # noqa: E402 (import after sys.path)
 
 # Lidar sampling windows around the robot.
 FRONT_WIN: Tuple[int, int] = (175, 185)
-LEFT_WIN: Tuple[int, int] = (90, 115)
+LEFT_WIN: Tuple[int, int] = (92, 104)
 RIGHT_WIN: Tuple[int, int] = (245, 270)
 MAX_RANGE: float = 4.0
 
