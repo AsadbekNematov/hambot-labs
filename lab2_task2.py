@@ -76,7 +76,7 @@ LEFT_DROP_FRONT_MARGIN_M: float = 0.05
 # Cornering behaviour configuration.
 CORNER_RADIUS_M: float = SIDE_TARGET_M
 CORNER_ARC_DEG: float = 90.0
-CORNER_BASE_CENTER_RPM: float = 11.5
+CORNER_BASE_CENTER_RPM: float = 18.0
 CORNER_MIN_CENTER_RPM: float = BASE_FWD_MIN_RPM
 CORNER_SLOW_BAND_DEG: float = 35.0
 CORNER_EPS_DEG: float = 3.0
@@ -442,7 +442,15 @@ def perform_left_corner_arc(
         return
 
     radius = max(radius_m, 1e-3)
-    log_status(context, f"Begin left arc radius={radius:.2f}m angle={angle_deg:.0f}°")
+    expected_time = (math.radians(angle_deg) * radius) / max(rpm_to_mps(CORNER_BASE_CENTER_RPM), 1e-6)
+    timeout_limit = max(CORNER_TIMEOUT_SEC, expected_time * 1.5)
+    log_status(
+        context,
+        (
+            f"Begin left arc radius={radius:.2f}m angle={angle_deg:.0f}° "
+            f"(allow {timeout_limit:.1f}s)"
+        ),
+    )
 
     start_heading = normalize_deg(get_heading_deg(bot))
     target = normalize_deg(start_heading + angle_deg)
@@ -483,7 +491,7 @@ def perform_left_corner_arc(
             log_status(context, "Supervisor requested shutdown during arc")
             break
 
-        if time.time() - start_time >= CORNER_TIMEOUT_SEC:
+        if time.time() - start_time >= timeout_limit:
             log_status(context, f"Timeout while executing arc (remaining error {error:+.1f}°)")
             break
 
