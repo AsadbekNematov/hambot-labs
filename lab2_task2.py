@@ -83,10 +83,11 @@ CORNER_EPS_DEG: float = 3.0
 CORNER_SETTLE_SEC: float = 0.08
 CORNER_TIMEOUT_SEC: float = 3.5
 CORNER_MIN_SCALE: float = 0.35
-CORNER_ADJUST_KP: float = 85.0
-CORNER_ADJUST_MAX_RPM: float = 8.0
-CORNER_ADJUST_DEADBAND_M: float = 0.01
-CORNER_SENSOR_PERIOD_SEC: float = 0.05
+CORNER_SENSOR_PERIOD_SEC: float = 0.06
+CORNER_RADIUS_KP: float = 0.85
+CORNER_RADIUS_MAX_DELTA_M: float = 0.14
+CORNER_RADIUS_MIN_M: float = AXLE_LEN_M / 2.0 + 0.03
+CORNER_RADIUS_MAX_M: float = 0.55
 
 # Running estimate of the nominal left-wall clearance.
 LEFT_REF_ALPHA: float = 0.25
@@ -450,16 +451,15 @@ def perform_left_corner_arc(
 
     desired_left = clamp(desired_left_m if desired_left_m is not None else SIDE_TARGET_M, LEFT_REF_MIN_M, LEFT_REF_MAX_M)
 
-    radius = max(radius_m, desired_left, AXLE_LEN_M / 2.0 + 1e-3)
+    base_radius = max(radius_m, desired_left, CORNER_RADIUS_MIN_M)
+    base_radius = min(base_radius, CORNER_RADIUS_MAX_M)
+    radius_cmd = base_radius
     half_axle = AXLE_LEN_M / 2.0
-    inner_radius = max(radius - half_axle, 1e-4)
+    inner_radius = max(base_radius - half_axle, 1e-4)
 
-    base_left, base_right = compute_arc_wheel_rpms(CORNER_BASE_CENTER_RPM, radius, turn_left=True)
-    min_center_rpm = max(
-        CORNER_MIN_CENTER_RPM,
-        MIN_EFFORT_RPM * radius / inner_radius,
-    )
-    slow_left, slow_right = compute_arc_wheel_rpms(min_center_rpm, radius, turn_left=True)
+    base_left, base_right = compute_arc_wheel_rpms(CORNER_BASE_CENTER_RPM, base_radius, turn_left=True)
+    min_center_rpm = max(CORNER_MIN_CENTER_RPM, MIN_EFFORT_RPM * base_radius / inner_radius)
+    slow_left, _ = compute_arc_wheel_rpms(min_center_rpm, base_radius, turn_left=True)
 
     if abs(base_left) > 1e-6:
         slow_scale = abs(slow_left) / abs(base_left)
@@ -467,12 +467,12 @@ def perform_left_corner_arc(
         slow_scale = 1.0
     scale_floor = max(CORNER_MIN_SCALE, slow_scale)
 
-    expected_time = (math.radians(angle_deg) * radius) / max(rpm_to_mps(CORNER_BASE_CENTER_RPM), 1e-6)
+    expected_time = (math.radians(angle_deg) * base_radius) / max(rpm_to_mps(CORNER_BASE_CENTER_RPM), 1e-6)
     timeout_limit = max(CORNER_TIMEOUT_SEC, expected_time * 1.5)
     log_status(
         context,
         (
-            f"Begin left arc radius={radius:.2f}m angle={angle_deg:.0f}° "
+            f"Begin left arc radius={base_radius:.2f}m angle={angle_deg:.0f}° "
             f"(allow {timeout_limit:.1f}s)"
         ),
     )
@@ -482,10 +482,10 @@ def perform_left_corner_arc(
     start_time = time.time()
     settle_start: Optional[float] = None
     final_error = float("nan")
-    adjust_rpm = 0.0
     last_sensor = 0.0
     last_feedback: Optional[float] = None
     last_feedback_log = 0.0
+    radius_adjust = 0.0
 
     while True:
         heading = normalize_deg(get_heading_deg(bot))
@@ -499,7 +499,6 @@ def perform_left_corner_arc(
             elif time.time() - settle_start >= CORNER_SETTLE_SEC:
                 break
             set_wheel_rpms(bot, 0.0, 0.0)
-            adjust_rpm = 0.0
         else:
             settle_start = None
             speed_ratio = min(abs_error / max(CORNER_SLOW_BAND_DEG, 1e-6), 1.0)
@@ -513,14 +512,27 @@ def perform_left_corner_arc(
                 if flags[1]:
                     last_feedback = left_s
                     err_left = desired_left - left_s
-                    if abs(err_left) <= CORNER_ADJUST_DEADBAND_M:
-                        adjust_rpm = 0.0
-                    else:
-                        adjust_rpm = clamp(CORNER_ADJUST_KP * err_left, -CORNER_ADJUST_MAX_RPM, CORNER_ADJUST_MAX_RPM)
+                    radius_adjust = clamp(
+                        CORNER_RADIUS_KP * err_left,
+                        -CORNER_RADIUS_MAX_DELTA_M,
+                        CORNER_RADIUS_MAX_DELTA_M,
+                    )
+                    radius_cmd = clamp(
+                        base_radius + radius_adjust,
+                        CORNER_RADIUS_MIN_M,
+                        CORNER_RADIUS_MAX_M,
+                    )
                 last_sensor = now
 
-            cmd_left = sat_rpm(base_left * scale + adjust_rpm)
-            cmd_right = sat_rpm(base_right * scale - adjust_rpm)
+            effective_radius = max(radius_cmd, CORNER_RADIUS_MIN_M)
+            inner_r = max(effective_radius - half_axle, 1e-4)
+            center_rpm = CORNER_BASE_CENTER_RPM * scale
+            required_center = MIN_EFFORT_RPM * effective_radius / inner_r
+            center_rpm = clamp(center_rpm, min_center_rpm, CORNER_BASE_CENTER_RPM)
+            center_rpm = max(center_rpm, required_center)
+            cmd_left, cmd_right = compute_arc_wheel_rpms(center_rpm, effective_radius, turn_left=True)
+            cmd_left = sat_rpm(cmd_left)
+            cmd_right = sat_rpm(cmd_right)
             set_wheel_rpms(bot, cmd_left, cmd_right)
 
             if last_feedback is not None and now - last_feedback_log >= 0.25:
@@ -528,7 +540,8 @@ def perform_left_corner_arc(
                     context,
                     (
                         f"heading_err={error:+.1f}° scale={scale:.2f} "
-                        f"left={last_feedback:0.2f}m target={desired_left:0.2f}m adjust={adjust_rpm:+.1f}rpm"
+                        f"left={last_feedback:0.2f}m target={desired_left:0.2f}m "
+                        f"radius={effective_radius:0.2f}m"
                     ),
                 )
                 last_feedback_log = now
