@@ -61,6 +61,7 @@ LOG_PREFIX = "[Task2]"
 
 DT_SEC: float = 0.032
 LIDAR_SAMPLE_TTL_SEC: float = 0.35
+POST_TURN_LIDAR_REFRESH_SEC: float = 0.25
 
 # Geometry for arc turns.
 AXLE_LEN_M: float = 0.184
@@ -318,6 +319,17 @@ def stop_robot(bot: HamBot) -> None:
         set_wheel_rpms(bot, 0.0, 0.0)
     except AttributeError:
         pass
+
+
+def refresh_lidar_stream(bot: HamBot, duration_sec: float = POST_TURN_LIDAR_REFRESH_SEC) -> None:
+    """
+    Actively step the simulation/robot for a short period so the lidar publishes a fresh scan.
+    """
+    deadline = time.time() + max(0.0, duration_sec)
+    while time.time() < deadline:
+        _ = fetch_lidar_scan(bot)
+        if supervisor_step(bot, DT_SEC) == -1:
+            break
 
 
 def compute_steering(error_m: float) -> float:
@@ -635,7 +647,8 @@ def main() -> None:
                 log_status("BLOCKED", f"Front={front_dist:0.2f}m Right={right_dist:0.2f}m -> {turn_label}")
                 perform_turn(bot, turn_angle, context=turn_label)
 
-                # Step once more to let lidar publish a fresh scan before resuming.
+                # Give the lidar time to publish a scan aligned with the new heading.
+                refresh_lidar_stream(bot)
                 refreshed = poll_distances(bot)
                 if refreshed is None:
                     log_status("LIDAR", "Turn complete but still waiting for fresh scan")
