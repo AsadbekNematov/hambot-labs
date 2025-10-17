@@ -121,7 +121,6 @@ if FOLLOW_SIDE not in {"left", "right"}:
 
 FOLLOW_LEFT = FOLLOW_SIDE == "left"
 SIDE_LABEL = "left" if FOLLOW_LEFT else "right"
-OPPOSITE_LABEL = "right" if FOLLOW_LEFT else "left"
 
 SIDE_FRONT_WIN = LEFT_FRONT_WIN if FOLLOW_LEFT else RIGHT_FRONT_WIN
 SIDE_REAR_WIN = LEFT_REAR_WIN if FOLLOW_LEFT else RIGHT_REAR_WIN
@@ -139,13 +138,6 @@ TURN_AWAY_ANGLE_180 = TURN_RIGHT_ANGLE_180 if FOLLOW_LEFT else -TURN_RIGHT_ANGLE
 def select_side_value(left_value, right_value):
     """Utility helper returning the value for the active follow side."""
     return left_value if FOLLOW_LEFT else right_value
-
-
-def extract_side_distances(front: float, left: float, right: float) -> Tuple[float, float]:
-    """
-    Return the (side, opposite) wall distances based on the configured follow side.
-    """
-    return (left, right) if FOLLOW_LEFT else (right, left)
 
 
 def compute_side_error(distance_m: float) -> float:
@@ -169,9 +161,6 @@ class RangeObservation:
     def side_distance(self) -> float:
         return select_side_value(self.left, self.right)
 
-    def opposite_distance(self) -> float:
-        return select_side_value(self.right, self.left)
-
     def side_orientation(self) -> Tuple[Optional[float], Optional[float]]:
         return self.side_front, self.side_rear
 
@@ -188,13 +177,10 @@ def side_open_for_turn(sample: RangeObservation) -> bool:
     if side_dist < SIDE_OPEN_FOR_TURN_M:
         return False
 
-    front = sample.side_front
-    rear = sample.side_rear
-    if front is not None and rear is not None:
-        if FOLLOW_LEFT:
-            orientation_delta = front - rear
-        else:
-            orientation_delta = rear - front
+    front_sample = sample.side_front
+    rear_sample = sample.side_rear
+    if front_sample is not None and rear_sample is not None:
+        orientation_delta = front_sample - rear_sample
         if orientation_delta < SIDE_OPEN_ORIENTATION_DELTA_M:
             return False
 
