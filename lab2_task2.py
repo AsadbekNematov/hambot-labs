@@ -12,7 +12,6 @@ import math
 import os
 import sys
 import time
-from dataclasses import dataclass
 from typing import Iterable, Optional, Sequence, Tuple
 
 # Allow running the controller directly from the repository root without
@@ -25,10 +24,6 @@ from src.robot_systems.robot import HamBot  # noqa: E402 (import after sys.path)
 FRONT_WIN: Tuple[int, int] = (175, 185)
 LEFT_WIN: Tuple[int, int] = (92, 104)
 RIGHT_WIN: Tuple[int, int] = (245, 270)
-LEFT_FRONT_WIN: Tuple[int, int] = (72, 88)
-LEFT_REAR_WIN: Tuple[int, int] = (108, 124)
-RIGHT_FRONT_WIN: Tuple[int, int] = (232, 248)
-RIGHT_REAR_WIN: Tuple[int, int] = (266, 282)
 MAX_RANGE: float = 4.0
 
 # Simplified motion parameters.
@@ -43,19 +38,12 @@ STEER_ERROR_FULL_M: float = 0.10
 MAX_STEER_RPM: float = 16.0
 MAX_RPM: float = 35.0
 MIN_EFFORT_RPM: float = 6.0
-ORIENTATION_DEADBAND_M: float = 0.01
-ORIENTATION_ERROR_FULL_M: float = 0.18
-ORIENTATION_KP: float = 80.0
-ORIENTATION_SLOWDOWN_FRACTION: float = 0.45
-SIDE_OPEN_TURN_MARGIN_M: float = 0.10
-SIDE_OPEN_FOR_TURN_M: float = SIDE_TARGET_M + SIDE_OPEN_TURN_MARGIN_M
-SIDE_OPEN_ORIENTATION_DELTA_M: float = 0.05
 
 # Obstacle handling thresholds.
 FRONT_BLOCK_M: float = 0.25
+RIGHT_CLEAR_M: float = 0.40
 
 # Turn behaviour.
-TURN_TRIM_DEG: float = 10.0
 TURN_KP: float = 0.6
 TURN_FAST_RPM: float = 24.0
 TURN_SLOW_RPM: float = 12.0
@@ -64,8 +52,8 @@ TURN_EPS_DEG: float = 2.0
 TURN_SETTLE_TIME: float = 0.08
 TURN_TIMEOUT_SEC: float = 4.0
 
-TURN_RIGHT_ANGLE_90: float = -(90.0 - TURN_TRIM_DEG)
-TURN_RIGHT_ANGLE_180: float = -(180.0 - TURN_TRIM_DEG)
+TURN_RIGHT_ANGLE_90: float = -80.0
+TURN_RIGHT_ANGLE_180: float = -170.0
 
 MAX_SENSOR_ATTEMPTS: int = 6
 
@@ -82,17 +70,17 @@ WHEEL_RADIUS_M: float = 0.045
 
 # Detection thresholds for spotting a left wall drop (corner entry).
 LEFT_DROP_MIN_DELTA_M: float = 0.08
-LEFT_DROP_RATIO: float = 1.6
+LEFT_DROP_RATIO: float = 0.6
 LEFT_DROP_PREV_MIN_M: float = 0.16
 LEFT_DROP_COOLDOWN_SEC: float = 2.5
 LEFT_DROP_FRONT_MARGIN_M: float = 0.05
 
 # Cornering behaviour configuration (keeps ~0.25 m clearance through a 90° bend).
 CORNER_TARGET_RADIUS_M: float = SIDE_TARGET_M  # centreline radius
-CORNER_ARC_DEG: float = max(0.0, 90.0 - TURN_TRIM_DEG)
+CORNER_ARC_DEG: float = 80.0
 CORNER_BASE_CENTER_RPM: float = 15.0
 CORNER_MIN_CENTER_RPM: float = BASE_FWD_MIN_RPM
-CORNER_SLOW_BAND_DEG: float = max(0.0, 45.0 - TURN_TRIM_DEG)
+CORNER_SLOW_BAND_DEG: float = 35.0
 CORNER_EPS_DEG: float = 3.0
 CORNER_SETTLE_SEC: float = 0.08
 CORNER_TIMEOUT_SEC: float = 3.5
@@ -103,88 +91,12 @@ CORNER_RADIUS_MAX_DELTA_M: float = 0.10
 CORNER_RADIUS_MIN_M: float = AXLE_LEN_M / 2.0 + 0.01
 CORNER_RADIUS_MAX_M: float = 0.45
 CORNER_RADIUS_BIAS_M: float = 0.02
-CORNER_INSIDE_EXTRA_RPM: float = 2.0
+CORNER_LEFT_EXTRA_RPM: float = 2.0
 
-# Running estimate of the nominal wall clearance.
+# Running estimate of the nominal left-wall clearance.
 LEFT_REF_ALPHA: float = 0.25
 LEFT_REF_MIN_M: float = 0.16
 LEFT_REF_MAX_M: float = 0.45
-
-# ---------------------------------------------------------------------------
-# Wall-following configuration
-# ---------------------------------------------------------------------------
-FOLLOW_SIDE: str = "left"  # change to "right" to follow the right wall
-
-FOLLOW_SIDE = FOLLOW_SIDE.strip().lower()
-if FOLLOW_SIDE not in {"left", "right"}:
-    raise ValueError(f"Unsupported FOLLOW_SIDE {FOLLOW_SIDE!r}; expected 'left' or 'right'")
-
-FOLLOW_LEFT = FOLLOW_SIDE == "left"
-SIDE_LABEL = "left" if FOLLOW_LEFT else "right"
-
-SIDE_FRONT_WIN = LEFT_FRONT_WIN if FOLLOW_LEFT else RIGHT_FRONT_WIN
-SIDE_REAR_WIN = LEFT_REAR_WIN if FOLLOW_LEFT else RIGHT_REAR_WIN
-
-SIDE_DROP_MIN_DELTA_M = LEFT_DROP_MIN_DELTA_M
-SIDE_DROP_RATIO = LEFT_DROP_RATIO
-SIDE_DROP_PREV_MIN_M = LEFT_DROP_PREV_MIN_M
-SIDE_DROP_COOLDOWN_SEC = LEFT_DROP_COOLDOWN_SEC
-SIDE_DROP_FRONT_MARGIN_M = LEFT_DROP_FRONT_MARGIN_M
-
-TURN_AWAY_ANGLE_90 = TURN_RIGHT_ANGLE_90 if FOLLOW_LEFT else -TURN_RIGHT_ANGLE_90
-TURN_AWAY_ANGLE_180 = TURN_RIGHT_ANGLE_180 if FOLLOW_LEFT else -TURN_RIGHT_ANGLE_180
-
-
-def select_side_value(left_value, right_value):
-    """Utility helper returning the value for the active follow side."""
-    return left_value if FOLLOW_LEFT else right_value
-
-
-def compute_side_error(distance_m: float) -> float:
-    """Return the signed clearance error for the configured follow side."""
-    return SIDE_TARGET_M - distance_m if FOLLOW_LEFT else distance_m - SIDE_TARGET_M
-
-
-@dataclass(frozen=True)
-class RangeObservation:
-    front: float
-    left: float
-    right: float
-    front_ok: bool
-    left_ok: bool
-    right_ok: bool
-    side_front: Optional[float]
-    side_rear: Optional[float]
-    side_front_ok: bool
-    side_rear_ok: bool
-
-    def side_distance(self) -> float:
-        return select_side_value(self.left, self.right)
-
-    def side_orientation(self) -> Tuple[Optional[float], Optional[float]]:
-        return self.side_front, self.side_rear
-
-    def side_distance_valid(self) -> bool:
-        return self.left_ok if FOLLOW_LEFT else self.right_ok
-
-
-def side_open_for_turn(sample: RangeObservation) -> bool:
-    """Return True if the tracked wall side looks open enough to take a 90° turn."""
-    if not sample.side_distance_valid():
-        return False
-
-    side_dist = sample.side_distance()
-    if side_dist < SIDE_OPEN_FOR_TURN_M:
-        return False
-
-    front_sample = sample.side_front
-    rear_sample = sample.side_rear
-    if front_sample is not None and rear_sample is not None:
-        orientation_delta = front_sample - rear_sample
-        if orientation_delta < SIDE_OPEN_ORIENTATION_DELTA_M:
-            return False
-
-    return True
 
 
 def clamp(value: float, lo: float, hi: float) -> float:
@@ -333,17 +245,7 @@ def get_probe_distances(
     return (front, left, right), (front_ok, left_ok, right_ok)
 
 
-def get_side_orientation_samples(
-    range_image: Iterable[float],
-    sample_timestamps: Optional[Iterable[float]] = None,
-) -> Tuple[Tuple[float, float], Tuple[bool, bool]]:
-    """Return distance samples at the front and rear of the tracked wall side."""
-    front, front_ok = window_min(range_image, *SIDE_FRONT_WIN, sample_timestamps=sample_timestamps)
-    rear, rear_ok = window_min(range_image, *SIDE_REAR_WIN, sample_timestamps=sample_timestamps)
-    return (front, rear), (front_ok, rear_ok)
-
-
-def poll_distances(bot: HamBot, attempts: int = MAX_SENSOR_ATTEMPTS) -> Optional[RangeObservation]:
+def poll_distances(bot: HamBot, attempts: int = MAX_SENSOR_ATTEMPTS) -> Optional[Tuple[float, float, float]]:
     """
     Attempt to fetch a fresh set of wall distances, retrying if all probes read MAX_RANGE.
 
@@ -354,24 +256,8 @@ def poll_distances(bot: HamBot, attempts: int = MAX_SENSOR_ATTEMPTS) -> Optional
         (front, left, right), (front_ok, left_ok, right_ok) = get_probe_distances(
             ranges, sample_timestamps=timestamps
         )
-        (side_front, side_rear), (side_front_ok, side_rear_ok) = get_side_orientation_samples(
-            ranges, sample_timestamps=timestamps
-        )
-
         if front_ok or left_ok or right_ok:
-            observation = RangeObservation(
-                front=front,
-                left=left,
-                right=right,
-                front_ok=front_ok,
-                left_ok=left_ok,
-                right_ok=right_ok,
-                side_front=side_front if side_front_ok else None,
-                side_rear=side_rear if side_rear_ok else None,
-                side_front_ok=side_front_ok,
-                side_rear_ok=side_rear_ok,
-            )
-            return observation
+            return front, left, right
 
         log_status("LIDAR", f"No valid scan (attempt {attempt}/{attempts}); waiting...")
         if supervisor_step(bot, DT_SEC) == -1:
@@ -447,41 +333,18 @@ def refresh_lidar_stream(bot: HamBot, duration_sec: float = POST_TURN_LIDAR_REFR
             break
 
 
-def compute_steering(
-    distance_error_m: float,
-    side_front_m: Optional[float] = None,
-    side_rear_m: Optional[float] = None,
-) -> float:
+def compute_steering(error_m: float) -> float:
     """
-    Convert distance and orientation errors into a steering command.
+    Convert left distance error into a steering term.
 
-    Positive return values command a turn away from the tracked wall.
+    Positive error means we are too close to the wall, so steer to the right.
     """
-    abs_error = abs(distance_error_m)
-    base_steer = 0.0
-    if abs_error >= SIDE_DEADBAND_M:
-        blend = clamp(
-            (abs_error - SIDE_DEADBAND_M) / max(STEER_ERROR_FULL_M - SIDE_DEADBAND_M, 1e-6),
-            0.0,
-            1.0,
-        )
-        gain = STEER_KP_NEAR + (STEER_KP_FAR - STEER_KP_NEAR) * blend
-        base_steer = clamp(gain * distance_error_m, -MAX_STEER_RPM, MAX_STEER_RPM)
-
-    orientation_term = 0.0
-    if side_front_m is not None and side_rear_m is not None:
-        orient_error = (
-            side_rear_m - side_front_m if FOLLOW_LEFT else side_front_m - side_rear_m
-        )
-        if abs(orient_error) > ORIENTATION_DEADBAND_M:
-            effective = math.copysign(
-                max(abs(orient_error) - ORIENTATION_DEADBAND_M, 0.0),
-                orient_error,
-            )
-            limited = clamp(effective, -ORIENTATION_ERROR_FULL_M, ORIENTATION_ERROR_FULL_M)
-            orientation_term = clamp(ORIENTATION_KP * limited, -MAX_STEER_RPM, MAX_STEER_RPM)
-
-    steer = base_steer + orientation_term
+    if abs(error_m) < SIDE_DEADBAND_M:
+        return 0.0
+    abs_error = abs(error_m)
+    blend = clamp((abs_error - SIDE_DEADBAND_M) / max(STEER_ERROR_FULL_M - SIDE_DEADBAND_M, 1e-6), 0.0, 1.0)
+    gain = STEER_KP_NEAR + (STEER_KP_FAR - STEER_KP_NEAR) * blend
+    steer = gain * error_m
     return clamp(steer, -MAX_STEER_RPM, MAX_STEER_RPM)
 
 
@@ -590,23 +453,18 @@ def perform_turn(bot: HamBot, angle_deg: float, context: str = "TURN") -> None:
     log_status(context, f"Turn complete; residual error {final_error:+.1f}°")
 
 
-def perform_corner_arc(
+def perform_left_corner_arc(
     bot: HamBot,
     radius_m: float = CORNER_TARGET_RADIUS_M,
     angle_deg: float = CORNER_ARC_DEG,
-    desired_side_m: Optional[float] = None,
-    turn_left: bool = True,
-    context: Optional[str] = None,
+    desired_left_m: Optional[float] = None,
+    context: str = "ARC_LEFT",
 ) -> None:
-    """Follow a quarter-circle arc while advancing."""
+    """Follow a quarter-circle arc to the left while advancing."""
     if angle_deg <= 1e-3:
         return
 
-    desired_clearance = clamp(
-        desired_side_m if desired_side_m is not None else SIDE_TARGET_M,
-        LEFT_REF_MIN_M,
-        LEFT_REF_MAX_M,
-    )
+    desired_left = clamp(desired_left_m if desired_left_m is not None else SIDE_TARGET_M, LEFT_REF_MIN_M, LEFT_REF_MAX_M)
 
     biased_radius = radius_m + CORNER_RADIUS_BIAS_M
     base_radius = clamp(biased_radius, CORNER_RADIUS_MIN_M, CORNER_RADIUS_MAX_M)
@@ -614,35 +472,29 @@ def perform_corner_arc(
     half_axle = AXLE_LEN_M / 2.0
     inner_radius = max(base_radius - half_axle, 1e-4)
 
-    base_l, base_r = compute_arc_wheel_rpms(CORNER_BASE_CENTER_RPM, base_radius, turn_left=turn_left)
+    base_left, base_right = compute_arc_wheel_rpms(CORNER_BASE_CENTER_RPM, base_radius, turn_left=True)
     min_center_rpm = max(CORNER_MIN_CENTER_RPM, MIN_EFFORT_RPM * base_radius / inner_radius)
-    slow_l, slow_r = compute_arc_wheel_rpms(min_center_rpm, base_radius, turn_left=turn_left)
+    slow_left, _ = compute_arc_wheel_rpms(min_center_rpm, base_radius, turn_left=True)
 
-    base_inner = base_l if turn_left else base_r
-    slow_inner = slow_l if turn_left else slow_r
-
-    if abs(base_inner) > 1e-6:
-        slow_scale = abs(slow_inner) / abs(base_inner)
+    if abs(base_left) > 1e-6:
+        slow_scale = abs(slow_left) / abs(base_left)
     else:
         slow_scale = 1.0
     scale_floor = max(CORNER_MIN_SCALE, slow_scale)
 
     expected_time = (math.radians(angle_deg) * base_radius) / max(rpm_to_mps(CORNER_BASE_CENTER_RPM), 1e-6)
     timeout_limit = max(CORNER_TIMEOUT_SEC, expected_time * 1.5)
-    direction_name = "left" if turn_left else "right"
-    if context is None:
-        context = f"ARC_{direction_name.upper()}"
     log_status(
         context,
         (
-            f"Begin {direction_name} arc radius={base_radius:.2f}m "
+            f"Begin left arc radius={base_radius:.2f}m "
             f"(bias={CORNER_RADIUS_BIAS_M:+0.3f}m) angle={angle_deg:.0f}° "
             f"(allow {timeout_limit:.1f}s)"
         ),
     )
 
     start_heading = normalize_deg(get_heading_deg(bot))
-    target = normalize_deg(start_heading + (angle_deg if turn_left else -angle_deg))
+    target = normalize_deg(start_heading + angle_deg)
     start_time = time.time()
     settle_start: Optional[float] = None
     final_error = float("nan")
@@ -673,13 +525,12 @@ def perform_corner_arc(
             now = time.time()
             if now - last_sensor >= CORNER_SENSOR_PERIOD_SEC:
                 ranges, timestamps = fetch_lidar_scan(bot)
-                (front_s, left_s, right_s), flags = get_probe_distances(ranges, sample_timestamps=timestamps)
-                side_idx = 1 if FOLLOW_LEFT else 2
-                if flags[side_idx]:
-                    last_feedback = select_side_value(left_s, right_s)
-                    err_side = desired_clearance - last_feedback
+                (front_s, left_s, _), flags = get_probe_distances(ranges, sample_timestamps=timestamps)
+                if flags[1]:
+                    last_feedback = left_s
+                    err_left = desired_left - left_s
                     radius_adjust = clamp(
-                        CORNER_RADIUS_KP * err_side,
+                        CORNER_RADIUS_KP * err_left,
                         -CORNER_RADIUS_MAX_DELTA_M,
                         CORNER_RADIUS_MAX_DELTA_M,
                     )
@@ -696,15 +547,10 @@ def perform_corner_arc(
             required_center = MIN_EFFORT_RPM * effective_radius / inner_r
             center_rpm = clamp(center_rpm, min_center_rpm, CORNER_BASE_CENTER_RPM)
             center_rpm = max(center_rpm, required_center)
-            cmd_left, cmd_right = compute_arc_wheel_rpms(center_rpm, effective_radius, turn_left=turn_left)
-            if turn_left:
-                cmd_left += CORNER_INSIDE_EXTRA_RPM
-            else:
-                cmd_right += CORNER_INSIDE_EXTRA_RPM
+            cmd_left, cmd_right = compute_arc_wheel_rpms(center_rpm, effective_radius, turn_left=True)
+            cmd_left += CORNER_LEFT_EXTRA_RPM
             if abs(cmd_left) < MIN_EFFORT_RPM:
                 cmd_left = math.copysign(MIN_EFFORT_RPM, cmd_left if abs(cmd_left) > 1e-6 else 1.0)
-            if abs(cmd_right) < MIN_EFFORT_RPM:
-                cmd_right = math.copysign(MIN_EFFORT_RPM, cmd_right if abs(cmd_right) > 1e-6 else 1.0)
             cmd_left = sat_rpm(cmd_left)
             cmd_right = sat_rpm(cmd_right)
             set_wheel_rpms(bot, cmd_left, cmd_right)
@@ -713,8 +559,8 @@ def perform_corner_arc(
                 log_status(
                     context,
                     (
-                        f"heading_err={error:+.1f}° scale={scale:.2f} "
-                        f"{SIDE_LABEL}={last_feedback:0.2f}m target={desired_clearance:0.2f}m "
+                            f"heading_err={error:+.1f}° scale={scale:.2f} "
+                        f"left={last_feedback:0.2f}m target={desired_left:0.2f}m "
                         f"radius={effective_radius:0.2f}m rpmL={cmd_left:0.1f} rpmR={cmd_right:0.1f}"
                     ),
                 )
@@ -744,81 +590,59 @@ def perform_corner_arc(
 
 
 def main() -> None:
-    """Simple wall-following loop."""
+    """Simple left-wall following loop."""
     bot = HamBot()
     last_debug = 0.0
 
-    log_status("INIT", f"Following {SIDE_LABEL} wall")
+    log_status("INIT", "Following left wall")
 
     # Pre-fill lidar values to let the sensor settle before control starts.
     log_status("INIT", "Warming up lidar stream")
     refresh_lidar_stream(bot, duration_sec=INITIAL_LIDAR_WARMUP_SEC)
     log_status("INIT", "Lidar ready")
 
-    last_valid: Optional[RangeObservation] = poll_distances(bot)
+    last_valid: Optional[Tuple[float, float, float]] = poll_distances(bot)
     if last_valid is None:
         log_status("LIDAR", "No valid scan after warm-up; waiting for data before moving")
     else:
         log_status(
             "INIT",
-            (
-                "Initial ranges "
-                f"front={last_valid.front:0.2f}m left={last_valid.left:0.2f}m "
-                f"right={last_valid.right:0.2f}m"
-            ),
+            f"Initial ranges front={last_valid[0]:0.2f}m left={last_valid[1]:0.2f}m right={last_valid[2]:0.2f}m",
         )
 
-    if last_valid is not None and last_valid.side_distance_valid():
-        last_side_sample: Optional[float] = last_valid.side_distance()
-    else:
-        last_side_sample = None
+    last_left_sample: Optional[float] = last_valid[1] if last_valid is not None else None
     last_corner_time = 0.0
-    side_reference = SIDE_TARGET_M
+    left_reference = SIDE_TARGET_M
 
     try:
         while supervisor_step(bot, DT_SEC) != -1:
-            observation = poll_distances(bot)
-            if observation is None:
+            distances = poll_distances(bot)
+            if distances is None:
                 if last_valid is None:
                     log_status("LIDAR", "Sensor still unavailable; holding position")
                     set_wheel_rpms(bot, 0.0, 0.0)
                     continue
                 log_status("LIDAR", "Using last known distances while waiting for updates")
-                current_sample = last_valid
+                front_dist, left_dist, right_dist = last_valid
                 new_sample = False
             else:
-                current_sample = observation
-                last_valid = observation
+                front_dist, left_dist, right_dist = distances
+                last_valid = distances
                 new_sample = True
-
-            front_dist = current_sample.front
-            left_dist = current_sample.left
-            right_dist = current_sample.right
-            side_dist = current_sample.side_distance()
-            side_front = current_sample.side_front
-            side_rear = current_sample.side_rear
-
-            if new_sample and LEFT_REF_MIN_M <= side_dist <= LEFT_REF_MAX_M:
-                filtered = clamp(side_dist, LEFT_REF_MIN_M, LEFT_REF_MAX_M)
-                side_reference = (1.0 - LEFT_REF_ALPHA) * side_reference + LEFT_REF_ALPHA * filtered
+                if LEFT_REF_MIN_M <= left_dist <= LEFT_REF_MAX_M:
+                    filtered = clamp(left_dist, LEFT_REF_MIN_M, LEFT_REF_MAX_M)
+                    left_reference = (1.0 - LEFT_REF_ALPHA) * left_reference + LEFT_REF_ALPHA * filtered
 
             if front_dist < FRONT_BLOCK_M:
-                side_open = side_open_for_turn(current_sample)
-                turn_angle = TURN_AWAY_ANGLE_90 if side_open else TURN_AWAY_ANGLE_180
-                turn_direction = "RIGHT" if FOLLOW_LEFT else "LEFT"
+                turn_angle = (
+                    TURN_RIGHT_ANGLE_90 if right_dist > RIGHT_CLEAR_M else TURN_RIGHT_ANGLE_180
+                )
                 turn_label = (
-                    f"TURN_{turn_direction}_{abs(TURN_AWAY_ANGLE_90):.0f}"
-                    if side_open
-                    else f"TURN_{turn_direction}_{abs(TURN_AWAY_ANGLE_180):.0f}"
+                    f"TURN_RIGHT_{abs(TURN_RIGHT_ANGLE_90):.0f}"
+                    if turn_angle == TURN_RIGHT_ANGLE_90
+                    else f"TURN_RIGHT_{abs(TURN_RIGHT_ANGLE_180):.0f}"
                 )
-                reason = "side opening" if side_open else "dead end"
-                log_status(
-                    "BLOCKED",
-                    (
-                        f"Front={front_dist:0.2f}m {SIDE_LABEL.capitalize()}={side_dist:0.2f}m "
-                        f"-> {turn_label} ({reason})"
-                    ),
-                )
+                log_status("BLOCKED", f"Front={front_dist:0.2f}m Right={right_dist:0.2f}m -> {turn_label}")
                 perform_turn(bot, turn_angle, context=turn_label)
 
                 # Give the lidar time to publish a scan aligned with the new heading.
@@ -828,24 +652,16 @@ def main() -> None:
                     log_status("LIDAR", "Turn complete but still waiting for fresh scan")
                     set_wheel_rpms(bot, 0.0, 0.0)
                     last_valid = None
-                    last_side_sample = None
+                    last_left_sample = None
                     last_debug = time.time()
                     continue
 
+                front_dist, left_dist, right_dist = refreshed
                 last_valid = refreshed
-                front_dist = refreshed.front
-                left_dist = refreshed.left
-                right_dist = refreshed.right
-                side_dist = refreshed.side_distance()
-                side_front = refreshed.side_front
-                side_rear = refreshed.side_rear
-                if refreshed.side_distance_valid():
-                    last_side_sample = side_dist
-                else:
-                    last_side_sample = None
-                if refreshed.side_distance_valid() and LEFT_REF_MIN_M <= side_dist <= LEFT_REF_MAX_M:
-                    filtered = clamp(side_dist, LEFT_REF_MIN_M, LEFT_REF_MAX_M)
-                    side_reference = (1.0 - LEFT_REF_ALPHA) * side_reference + LEFT_REF_ALPHA * filtered
+                last_left_sample = left_dist
+                if LEFT_REF_MIN_M <= left_dist <= LEFT_REF_MAX_M:
+                    filtered = clamp(left_dist, LEFT_REF_MIN_M, LEFT_REF_MAX_M)
+                    left_reference = (1.0 - LEFT_REF_ALPHA) * left_reference + LEFT_REF_ALPHA * filtered
                 log_status(
                     "FOLLOW",
                     (
@@ -857,36 +673,33 @@ def main() -> None:
                 last_debug = time.time()
                 continue
 
-            side_drop = False
-            if new_sample and current_sample.side_distance_valid() and last_side_sample is not None:
-                increase = side_dist - last_side_sample
-                enough_time = (time.time() - last_corner_time) >= SIDE_DROP_COOLDOWN_SEC
-                ratio_threshold = last_side_sample * SIDE_DROP_RATIO
+            left_drop = False
+            if new_sample and last_left_sample is not None:
+                drop = last_left_sample - left_dist
+                enough_time = (time.time() - last_corner_time) >= LEFT_DROP_COOLDOWN_SEC
                 if (
-                    last_side_sample >= SIDE_DROP_PREV_MIN_M
-                    and increase >= SIDE_DROP_MIN_DELTA_M
-                    and side_dist >= ratio_threshold
-                    and front_dist > (FRONT_BLOCK_M + SIDE_DROP_FRONT_MARGIN_M)
+                    last_left_sample >= LEFT_DROP_PREV_MIN_M
+                    and drop >= LEFT_DROP_MIN_DELTA_M
+                    and left_dist <= last_left_sample * LEFT_DROP_RATIO
+                    and front_dist > (FRONT_BLOCK_M + LEFT_DROP_FRONT_MARGIN_M)
                     and enough_time
-                ):
-                    side_drop = True
+                        ):
+                    left_drop = True
 
-            if side_drop:
-                arc_target = clamp(side_reference, LEFT_REF_MIN_M, LEFT_REF_MAX_M)
-                arc_context = "ARC_LEFT" if FOLLOW_LEFT else "ARC_RIGHT"
+            if left_drop:
+                arc_target_left = clamp(left_reference, LEFT_REF_MIN_M, LEFT_REF_MAX_M)
                 log_status(
                     "CORNER",
                     (
-                        f"{SIDE_LABEL.capitalize()} drop {last_side_sample:0.2f}m→{side_dist:0.2f}m "
-                        f"(front={front_dist:0.2f}m) -> {arc_context} radius≈{arc_target:0.2f}m"
+                        f"Left drop {last_left_sample:0.2f}m→{left_dist:0.2f}m "
+                        f"(front={front_dist:0.2f}m) -> ARC_LEFT radius≈{arc_target_left:0.2f}m"
                     ),
                 )
-                perform_corner_arc(
+                perform_left_corner_arc(
                     bot,
-                    radius_m=arc_target,
-                    desired_side_m=arc_target,
-                    turn_left=FOLLOW_LEFT,
-                    context=arc_context,
+                    radius_m=arc_target_left,
+                    desired_left_m=arc_target_left,
+                    context="ARC_LEFT",
                 )
 
                 # Allow the lidar stream to catch up after the arc completes.
@@ -896,26 +709,18 @@ def main() -> None:
                     log_status("LIDAR", "Arc complete but waiting for fresh scan")
                     set_wheel_rpms(bot, 0.0, 0.0)
                     last_valid = None
-                    last_side_sample = None
+                    last_left_sample = None
                     last_corner_time = time.time()
                     last_debug = time.time()
                     continue
 
+                front_dist, left_dist, right_dist = refreshed
                 last_valid = refreshed
-                front_dist = refreshed.front
-                left_dist = refreshed.left
-                right_dist = refreshed.right
-                side_dist = refreshed.side_distance()
-                side_front = refreshed.side_front
-                side_rear = refreshed.side_rear
-                if refreshed.side_distance_valid():
-                    last_side_sample = side_dist
-                else:
-                    last_side_sample = None
+                last_left_sample = left_dist
                 last_corner_time = time.time()
-                if refreshed.side_distance_valid() and LEFT_REF_MIN_M <= side_dist <= LEFT_REF_MAX_M:
-                    filtered = clamp(side_dist, LEFT_REF_MIN_M, LEFT_REF_MAX_M)
-                    side_reference = (1.0 - LEFT_REF_ALPHA) * side_reference + LEFT_REF_ALPHA * filtered
+                if LEFT_REF_MIN_M <= left_dist <= LEFT_REF_MAX_M:
+                    filtered = clamp(left_dist, LEFT_REF_MIN_M, LEFT_REF_MAX_M)
+                    left_reference = (1.0 - LEFT_REF_ALPHA) * left_reference + LEFT_REF_ALPHA * filtered
                 log_status(
                     "FOLLOW",
                     (
@@ -926,46 +731,28 @@ def main() -> None:
                 last_debug = time.time()
                 continue
 
-            error = compute_side_error(side_dist)
-            if side_front is not None and side_rear is not None:
-                orient_error = (
-                    side_rear - side_front if FOLLOW_LEFT else side_front - side_rear
-                )
-            else:
-                orient_error = None
-
-            steer = compute_steering(error, side_front, side_rear)
+            error = SIDE_TARGET_M - left_dist
+            steer = compute_steering(error)
             forward_rpm = compute_forward_speed(error)
-            if orient_error is not None and ORIENTATION_ERROR_FULL_M > 1e-6:
-                orient_mag = clamp(abs(orient_error), 0.0, ORIENTATION_ERROR_FULL_M)
-                speed_scale = 1.0 - ORIENTATION_SLOWDOWN_FRACTION * (
-                    orient_mag / ORIENTATION_ERROR_FULL_M
-                )
-                forward_rpm = clamp(
-                    forward_rpm * max(speed_scale, 0.0),
-                    BASE_FWD_MIN_RPM,
-                    BASE_FWD_RPM,
-                )
+
             cmd_left, cmd_right = mix_wheel_commands(forward_rpm, steer)
             set_wheel_rpms(bot, cmd_left, cmd_right)
 
             now = time.time()
             if now - last_debug >= 0.2:
-                orient_segment = f" orient={orient_error:+0.2f}m" if orient_error is not None else ""
                 log_status(
                     "FOLLOW",
                     (
                         f"front={front_dist:0.2f}m left={left_dist:0.2f}m "
-                        f"right={right_dist:0.2f}m {SIDE_LABEL}={side_dist:0.2f}m "
-                        f"target={SIDE_TARGET_M:0.2f}m{orient_segment} "
+                        f"right={right_dist:0.2f}m target={SIDE_TARGET_M:0.2f}m "
                         f"error={error:+0.2f}m steer={steer:+0.2f} fwd={forward_rpm:0.1f} "
                         f"rpmL={cmd_left:0.1f} rpmR={cmd_right:0.1f}"
                     ),
                 )
                 last_debug = now
 
-            if new_sample and current_sample.side_distance_valid():
-                last_side_sample = side_dist
+            if new_sample:
+                last_left_sample = left_dist
 
     except KeyboardInterrupt:
         print("\n[Task2] Interrupted by user.")
