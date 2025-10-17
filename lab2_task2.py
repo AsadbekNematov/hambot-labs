@@ -82,7 +82,7 @@ WHEEL_RADIUS_M: float = 0.045
 
 # Detection thresholds for spotting a left wall drop (corner entry).
 LEFT_DROP_MIN_DELTA_M: float = 0.08
-LEFT_DROP_RATIO: float = 0.6
+LEFT_DROP_RATIO: float = 1.6
 LEFT_DROP_PREV_MIN_M: float = 0.16
 LEFT_DROP_COOLDOWN_SEC: float = 2.5
 LEFT_DROP_FRONT_MARGIN_M: float = 0.05
@@ -859,12 +859,13 @@ def main() -> None:
 
             side_drop = False
             if new_sample and current_sample.side_distance_valid() and last_side_sample is not None:
-                drop = last_side_sample - side_dist
+                increase = side_dist - last_side_sample
                 enough_time = (time.time() - last_corner_time) >= SIDE_DROP_COOLDOWN_SEC
+                ratio_threshold = last_side_sample * SIDE_DROP_RATIO
                 if (
                     last_side_sample >= SIDE_DROP_PREV_MIN_M
-                    and drop >= SIDE_DROP_MIN_DELTA_M
-                    and side_dist <= last_side_sample * SIDE_DROP_RATIO
+                    and increase >= SIDE_DROP_MIN_DELTA_M
+                    and side_dist >= ratio_threshold
                     and front_dist > (FRONT_BLOCK_M + SIDE_DROP_FRONT_MARGIN_M)
                     and enough_time
                 ):
