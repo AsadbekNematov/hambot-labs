@@ -47,12 +47,15 @@ ORIENTATION_DEADBAND_M: float = 0.01
 ORIENTATION_ERROR_FULL_M: float = 0.18
 ORIENTATION_KP: float = 80.0
 ORIENTATION_SLOWDOWN_FRACTION: float = 0.45
+SIDE_OPEN_TURN_MARGIN_M: float = 0.10
+SIDE_OPEN_FOR_TURN_M: float = SIDE_TARGET_M + SIDE_OPEN_TURN_MARGIN_M
+SIDE_OPEN_ORIENTATION_DELTA_M: float = 0.05
 
 # Obstacle handling thresholds.
 FRONT_BLOCK_M: float = 0.25
-RIGHT_CLEAR_M: float = 0.40
 
 # Turn behaviour.
+TURN_TRIM_DEG: float = 10.0
 TURN_KP: float = 0.6
 TURN_FAST_RPM: float = 24.0
 TURN_SLOW_RPM: float = 12.0
@@ -61,8 +64,8 @@ TURN_EPS_DEG: float = 2.0
 TURN_SETTLE_TIME: float = 0.08
 TURN_TIMEOUT_SEC: float = 4.0
 
-TURN_RIGHT_ANGLE_90: float = -80.0
-TURN_RIGHT_ANGLE_180: float = -170.0
+TURN_RIGHT_ANGLE_90: float = -(90.0 - TURN_TRIM_DEG)
+TURN_RIGHT_ANGLE_180: float = -(180.0 - TURN_TRIM_DEG)
 
 MAX_SENSOR_ATTEMPTS: int = 6
 
@@ -86,10 +89,10 @@ LEFT_DROP_FRONT_MARGIN_M: float = 0.05
 
 # Cornering behaviour configuration (keeps ~0.25 m clearance through a 90° bend).
 CORNER_TARGET_RADIUS_M: float = SIDE_TARGET_M  # centreline radius
-CORNER_ARC_DEG: float = 80.0
+CORNER_ARC_DEG: float = max(0.0, 90.0 - TURN_TRIM_DEG)
 CORNER_BASE_CENTER_RPM: float = 15.0
 CORNER_MIN_CENTER_RPM: float = BASE_FWD_MIN_RPM
-CORNER_SLOW_BAND_DEG: float = 35.0
+CORNER_SLOW_BAND_DEG: float = max(0.0, 45.0 - TURN_TRIM_DEG)
 CORNER_EPS_DEG: float = 3.0
 CORNER_SETTLE_SEC: float = 0.08
 CORNER_TIMEOUT_SEC: float = 3.5
@@ -174,6 +177,28 @@ class RangeObservation:
 
     def side_distance_valid(self) -> bool:
         return self.left_ok if FOLLOW_LEFT else self.right_ok
+
+
+def side_open_for_turn(sample: RangeObservation) -> bool:
+    """Return True if the tracked wall side looks open enough to take a 90° turn."""
+    if not sample.side_distance_valid():
+        return False
+
+    side_dist = sample.side_distance()
+    if side_dist < SIDE_OPEN_FOR_TURN_M:
+        return False
+
+    front = sample.side_front
+    rear = sample.side_rear
+    if front is not None and rear is not None:
+        if FOLLOW_LEFT:
+            orientation_delta = front - rear
+        else:
+            orientation_delta = rear - front
+        if orientation_delta < SIDE_OPEN_ORIENTATION_DELTA_M:
+            return False
+
+    return True
 
 
 def clamp(value: float, lo: float, hi: float) -> float:
@@ -784,7 +809,6 @@ def main() -> None:
             left_dist = current_sample.left
             right_dist = current_sample.right
             side_dist = current_sample.side_distance()
-            opposite_dist = current_sample.opposite_distance()
             side_front = current_sample.side_front
             side_rear = current_sample.side_rear
 
@@ -793,18 +817,20 @@ def main() -> None:
                 side_reference = (1.0 - LEFT_REF_ALPHA) * side_reference + LEFT_REF_ALPHA * filtered
 
             if front_dist < FRONT_BLOCK_M:
-                opposite_clear = opposite_dist > RIGHT_CLEAR_M
-                turn_angle = TURN_AWAY_ANGLE_90 if opposite_clear else TURN_AWAY_ANGLE_180
+                side_open = side_open_for_turn(current_sample)
+                turn_angle = TURN_AWAY_ANGLE_90 if side_open else TURN_AWAY_ANGLE_180
                 turn_direction = "RIGHT" if FOLLOW_LEFT else "LEFT"
                 turn_label = (
                     f"TURN_{turn_direction}_{abs(TURN_AWAY_ANGLE_90):.0f}"
-                    if opposite_clear
+                    if side_open
                     else f"TURN_{turn_direction}_{abs(TURN_AWAY_ANGLE_180):.0f}"
                 )
+                reason = "side opening" if side_open else "dead end"
                 log_status(
                     "BLOCKED",
                     (
-                        f"Front={front_dist:0.2f}m {OPPOSITE_LABEL.capitalize()}={opposite_dist:0.2f}m -> {turn_label}"
+                        f"Front={front_dist:0.2f}m {SIDE_LABEL.capitalize()}={side_dist:0.2f}m "
+                        f"-> {turn_label} ({reason})"
                     ),
                 )
                 perform_turn(bot, turn_angle, context=turn_label)
@@ -825,7 +851,6 @@ def main() -> None:
                 left_dist = refreshed.left
                 right_dist = refreshed.right
                 side_dist = refreshed.side_distance()
-                opposite_dist = refreshed.opposite_distance()
                 side_front = refreshed.side_front
                 side_rear = refreshed.side_rear
                 if refreshed.side_distance_valid():
@@ -894,7 +919,6 @@ def main() -> None:
                 left_dist = refreshed.left
                 right_dist = refreshed.right
                 side_dist = refreshed.side_distance()
-                opposite_dist = refreshed.opposite_distance()
                 side_front = refreshed.side_front
                 side_rear = refreshed.side_rear
                 if refreshed.side_distance_valid():
