@@ -12,6 +12,7 @@ import math
 import os
 import sys
 import time
+from dataclasses import dataclass
 from typing import Iterable, Optional, Sequence, Tuple
 
 # Allow running the controller directly from the repository root without
@@ -24,6 +25,10 @@ from src.robot_systems.robot import HamBot  # noqa: E402 (import after sys.path)
 FRONT_WIN: Tuple[int, int] = (175, 185)
 LEFT_WIN: Tuple[int, int] = (92, 104)
 RIGHT_WIN: Tuple[int, int] = (245, 270)
+LEFT_FRONT_WIN: Tuple[int, int] = (72, 88)
+LEFT_REAR_WIN: Tuple[int, int] = (108, 124)
+RIGHT_FRONT_WIN: Tuple[int, int] = (232, 248)
+RIGHT_REAR_WIN: Tuple[int, int] = (266, 282)
 MAX_RANGE: float = 4.0
 
 # Simplified motion parameters.
@@ -38,6 +43,10 @@ STEER_ERROR_FULL_M: float = 0.10
 MAX_STEER_RPM: float = 16.0
 MAX_RPM: float = 35.0
 MIN_EFFORT_RPM: float = 6.0
+ORIENTATION_DEADBAND_M: float = 0.01
+ORIENTATION_ERROR_FULL_M: float = 0.18
+ORIENTATION_KP: float = 80.0
+ORIENTATION_SLOWDOWN_FRACTION: float = 0.45
 
 # Obstacle handling thresholds.
 FRONT_BLOCK_M: float = 0.25
@@ -111,6 +120,9 @@ FOLLOW_LEFT = FOLLOW_SIDE == "left"
 SIDE_LABEL = "left" if FOLLOW_LEFT else "right"
 OPPOSITE_LABEL = "right" if FOLLOW_LEFT else "left"
 
+SIDE_FRONT_WIN = LEFT_FRONT_WIN if FOLLOW_LEFT else RIGHT_FRONT_WIN
+SIDE_REAR_WIN = LEFT_REAR_WIN if FOLLOW_LEFT else RIGHT_REAR_WIN
+
 SIDE_DROP_MIN_DELTA_M = LEFT_DROP_MIN_DELTA_M
 SIDE_DROP_RATIO = LEFT_DROP_RATIO
 SIDE_DROP_PREV_MIN_M = LEFT_DROP_PREV_MIN_M
@@ -136,6 +148,32 @@ def extract_side_distances(front: float, left: float, right: float) -> Tuple[flo
 def compute_side_error(distance_m: float) -> float:
     """Return the signed clearance error for the configured follow side."""
     return SIDE_TARGET_M - distance_m if FOLLOW_LEFT else distance_m - SIDE_TARGET_M
+
+
+@dataclass(frozen=True)
+class RangeObservation:
+    front: float
+    left: float
+    right: float
+    front_ok: bool
+    left_ok: bool
+    right_ok: bool
+    side_front: Optional[float]
+    side_rear: Optional[float]
+    side_front_ok: bool
+    side_rear_ok: bool
+
+    def side_distance(self) -> float:
+        return select_side_value(self.left, self.right)
+
+    def opposite_distance(self) -> float:
+        return select_side_value(self.right, self.left)
+
+    def side_orientation(self) -> Tuple[Optional[float], Optional[float]]:
+        return self.side_front, self.side_rear
+
+    def side_distance_valid(self) -> bool:
+        return self.left_ok if FOLLOW_LEFT else self.right_ok
 
 
 def clamp(value: float, lo: float, hi: float) -> float:
@@ -284,7 +322,17 @@ def get_probe_distances(
     return (front, left, right), (front_ok, left_ok, right_ok)
 
 
-def poll_distances(bot: HamBot, attempts: int = MAX_SENSOR_ATTEMPTS) -> Optional[Tuple[float, float, float]]:
+def get_side_orientation_samples(
+    range_image: Iterable[float],
+    sample_timestamps: Optional[Iterable[float]] = None,
+) -> Tuple[Tuple[float, float], Tuple[bool, bool]]:
+    """Return distance samples at the front and rear of the tracked wall side."""
+    front, front_ok = window_min(range_image, *SIDE_FRONT_WIN, sample_timestamps=sample_timestamps)
+    rear, rear_ok = window_min(range_image, *SIDE_REAR_WIN, sample_timestamps=sample_timestamps)
+    return (front, rear), (front_ok, rear_ok)
+
+
+def poll_distances(bot: HamBot, attempts: int = MAX_SENSOR_ATTEMPTS) -> Optional[RangeObservation]:
     """
     Attempt to fetch a fresh set of wall distances, retrying if all probes read MAX_RANGE.
 
@@ -295,8 +343,24 @@ def poll_distances(bot: HamBot, attempts: int = MAX_SENSOR_ATTEMPTS) -> Optional
         (front, left, right), (front_ok, left_ok, right_ok) = get_probe_distances(
             ranges, sample_timestamps=timestamps
         )
+        (side_front, side_rear), (side_front_ok, side_rear_ok) = get_side_orientation_samples(
+            ranges, sample_timestamps=timestamps
+        )
+
         if front_ok or left_ok or right_ok:
-            return front, left, right
+            observation = RangeObservation(
+                front=front,
+                left=left,
+                right=right,
+                front_ok=front_ok,
+                left_ok=left_ok,
+                right_ok=right_ok,
+                side_front=side_front if side_front_ok else None,
+                side_rear=side_rear if side_rear_ok else None,
+                side_front_ok=side_front_ok,
+                side_rear_ok=side_rear_ok,
+            )
+            return observation
 
         log_status("LIDAR", f"No valid scan (attempt {attempt}/{attempts}); waiting...")
         if supervisor_step(bot, DT_SEC) == -1:
@@ -372,17 +436,41 @@ def refresh_lidar_stream(bot: HamBot, duration_sec: float = POST_TURN_LIDAR_REFR
             break
 
 
-def compute_steering(error_m: float) -> float:
+def compute_steering(
+    distance_error_m: float,
+    side_front_m: Optional[float] = None,
+    side_rear_m: Optional[float] = None,
+) -> float:
     """
-    Convert a signed side-distance error into a steering term.
-    Positive values command a turn away from the tracked wall.
+    Convert distance and orientation errors into a steering command.
+
+    Positive return values command a turn away from the tracked wall.
     """
-    if abs(error_m) < SIDE_DEADBAND_M:
-        return 0.0
-    abs_error = abs(error_m)
-    blend = clamp((abs_error - SIDE_DEADBAND_M) / max(STEER_ERROR_FULL_M - SIDE_DEADBAND_M, 1e-6), 0.0, 1.0)
-    gain = STEER_KP_NEAR + (STEER_KP_FAR - STEER_KP_NEAR) * blend
-    steer = gain * error_m
+    abs_error = abs(distance_error_m)
+    base_steer = 0.0
+    if abs_error >= SIDE_DEADBAND_M:
+        blend = clamp(
+            (abs_error - SIDE_DEADBAND_M) / max(STEER_ERROR_FULL_M - SIDE_DEADBAND_M, 1e-6),
+            0.0,
+            1.0,
+        )
+        gain = STEER_KP_NEAR + (STEER_KP_FAR - STEER_KP_NEAR) * blend
+        base_steer = clamp(gain * distance_error_m, -MAX_STEER_RPM, MAX_STEER_RPM)
+
+    orientation_term = 0.0
+    if side_front_m is not None and side_rear_m is not None:
+        orient_error = (
+            side_rear_m - side_front_m if FOLLOW_LEFT else side_front_m - side_rear_m
+        )
+        if abs(orient_error) > ORIENTATION_DEADBAND_M:
+            effective = math.copysign(
+                max(abs(orient_error) - ORIENTATION_DEADBAND_M, 0.0),
+                orient_error,
+            )
+            limited = clamp(effective, -ORIENTATION_ERROR_FULL_M, ORIENTATION_ERROR_FULL_M)
+            orientation_term = clamp(ORIENTATION_KP * limited, -MAX_STEER_RPM, MAX_STEER_RPM)
+
+    steer = base_steer + orientation_term
     return clamp(steer, -MAX_STEER_RPM, MAX_STEER_RPM)
 
 
@@ -656,18 +744,21 @@ def main() -> None:
     refresh_lidar_stream(bot, duration_sec=INITIAL_LIDAR_WARMUP_SEC)
     log_status("INIT", "Lidar ready")
 
-    last_valid: Optional[Tuple[float, float, float]] = poll_distances(bot)
+    last_valid: Optional[RangeObservation] = poll_distances(bot)
     if last_valid is None:
         log_status("LIDAR", "No valid scan after warm-up; waiting for data before moving")
     else:
         log_status(
             "INIT",
-            f"Initial ranges front={last_valid[0]:0.2f}m left={last_valid[1]:0.2f}m right={last_valid[2]:0.2f}m",
+            (
+                "Initial ranges "
+                f"front={last_valid.front:0.2f}m left={last_valid.left:0.2f}m "
+                f"right={last_valid.right:0.2f}m"
+            ),
         )
 
-    last_side_sample: Optional[float]
-    if last_valid is not None:
-        last_side_sample = extract_side_distances(*last_valid)[0]
+    if last_valid is not None and last_valid.side_distance_valid():
+        last_side_sample: Optional[float] = last_valid.side_distance()
     else:
         last_side_sample = None
     last_corner_time = 0.0
@@ -675,21 +766,28 @@ def main() -> None:
 
     try:
         while supervisor_step(bot, DT_SEC) != -1:
-            distances = poll_distances(bot)
-            if distances is None:
+            observation = poll_distances(bot)
+            if observation is None:
                 if last_valid is None:
                     log_status("LIDAR", "Sensor still unavailable; holding position")
                     set_wheel_rpms(bot, 0.0, 0.0)
                     continue
                 log_status("LIDAR", "Using last known distances while waiting for updates")
-                front_dist, left_dist, right_dist = last_valid
+                current_sample = last_valid
                 new_sample = False
             else:
-                front_dist, left_dist, right_dist = distances
-                last_valid = distances
+                current_sample = observation
+                last_valid = observation
                 new_sample = True
 
-            side_dist, opposite_dist = extract_side_distances(front_dist, left_dist, right_dist)
+            front_dist = current_sample.front
+            left_dist = current_sample.left
+            right_dist = current_sample.right
+            side_dist = current_sample.side_distance()
+            opposite_dist = current_sample.opposite_distance()
+            side_front = current_sample.side_front
+            side_rear = current_sample.side_rear
+
             if new_sample and LEFT_REF_MIN_M <= side_dist <= LEFT_REF_MAX_M:
                 filtered = clamp(side_dist, LEFT_REF_MIN_M, LEFT_REF_MAX_M)
                 side_reference = (1.0 - LEFT_REF_ALPHA) * side_reference + LEFT_REF_ALPHA * filtered
@@ -722,11 +820,19 @@ def main() -> None:
                     last_debug = time.time()
                     continue
 
-                front_dist, left_dist, right_dist = refreshed
                 last_valid = refreshed
-                side_dist, opposite_dist = extract_side_distances(front_dist, left_dist, right_dist)
-                last_side_sample = side_dist
-                if LEFT_REF_MIN_M <= side_dist <= LEFT_REF_MAX_M:
+                front_dist = refreshed.front
+                left_dist = refreshed.left
+                right_dist = refreshed.right
+                side_dist = refreshed.side_distance()
+                opposite_dist = refreshed.opposite_distance()
+                side_front = refreshed.side_front
+                side_rear = refreshed.side_rear
+                if refreshed.side_distance_valid():
+                    last_side_sample = side_dist
+                else:
+                    last_side_sample = None
+                if refreshed.side_distance_valid() and LEFT_REF_MIN_M <= side_dist <= LEFT_REF_MAX_M:
                     filtered = clamp(side_dist, LEFT_REF_MIN_M, LEFT_REF_MAX_M)
                     side_reference = (1.0 - LEFT_REF_ALPHA) * side_reference + LEFT_REF_ALPHA * filtered
                 log_status(
@@ -741,7 +847,7 @@ def main() -> None:
                 continue
 
             side_drop = False
-            if new_sample and last_side_sample is not None:
+            if new_sample and current_sample.side_distance_valid() and last_side_sample is not None:
                 drop = last_side_sample - side_dist
                 enough_time = (time.time() - last_corner_time) >= SIDE_DROP_COOLDOWN_SEC
                 if (
@@ -783,12 +889,20 @@ def main() -> None:
                     last_debug = time.time()
                     continue
 
-                front_dist, left_dist, right_dist = refreshed
                 last_valid = refreshed
-                side_dist, opposite_dist = extract_side_distances(front_dist, left_dist, right_dist)
-                last_side_sample = side_dist
+                front_dist = refreshed.front
+                left_dist = refreshed.left
+                right_dist = refreshed.right
+                side_dist = refreshed.side_distance()
+                opposite_dist = refreshed.opposite_distance()
+                side_front = refreshed.side_front
+                side_rear = refreshed.side_rear
+                if refreshed.side_distance_valid():
+                    last_side_sample = side_dist
+                else:
+                    last_side_sample = None
                 last_corner_time = time.time()
-                if LEFT_REF_MIN_M <= side_dist <= LEFT_REF_MAX_M:
+                if refreshed.side_distance_valid() and LEFT_REF_MIN_M <= side_dist <= LEFT_REF_MAX_M:
                     filtered = clamp(side_dist, LEFT_REF_MIN_M, LEFT_REF_MAX_M)
                     side_reference = (1.0 - LEFT_REF_ALPHA) * side_reference + LEFT_REF_ALPHA * filtered
                 log_status(
@@ -802,26 +916,44 @@ def main() -> None:
                 continue
 
             error = compute_side_error(side_dist)
-            steer = compute_steering(error)
+            if side_front is not None and side_rear is not None:
+                orient_error = (
+                    side_rear - side_front if FOLLOW_LEFT else side_front - side_rear
+                )
+            else:
+                orient_error = None
+
+            steer = compute_steering(error, side_front, side_rear)
             forward_rpm = compute_forward_speed(error)
+            if orient_error is not None and ORIENTATION_ERROR_FULL_M > 1e-6:
+                orient_mag = clamp(abs(orient_error), 0.0, ORIENTATION_ERROR_FULL_M)
+                speed_scale = 1.0 - ORIENTATION_SLOWDOWN_FRACTION * (
+                    orient_mag / ORIENTATION_ERROR_FULL_M
+                )
+                forward_rpm = clamp(
+                    forward_rpm * max(speed_scale, 0.0),
+                    BASE_FWD_MIN_RPM,
+                    BASE_FWD_RPM,
+                )
             cmd_left, cmd_right = mix_wheel_commands(forward_rpm, steer)
             set_wheel_rpms(bot, cmd_left, cmd_right)
 
             now = time.time()
             if now - last_debug >= 0.2:
+                orient_segment = f" orient={orient_error:+0.2f}m" if orient_error is not None else ""
                 log_status(
                     "FOLLOW",
                     (
                         f"front={front_dist:0.2f}m left={left_dist:0.2f}m "
                         f"right={right_dist:0.2f}m {SIDE_LABEL}={side_dist:0.2f}m "
-                        f"target={SIDE_TARGET_M:0.2f}m "
+                        f"target={SIDE_TARGET_M:0.2f}m{orient_segment} "
                         f"error={error:+0.2f}m steer={steer:+0.2f} fwd={forward_rpm:0.1f} "
                         f"rpmL={cmd_left:0.1f} rpmR={cmd_right:0.1f}"
                     ),
                 )
                 last_debug = now
 
-            if new_sample:
+            if new_sample and current_sample.side_distance_valid():
                 last_side_sample = side_dist
 
     except KeyboardInterrupt:
